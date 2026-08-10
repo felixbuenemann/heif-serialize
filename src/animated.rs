@@ -1,9 +1,15 @@
-//! Animated AVIF container serialization.
+//! Animated AVIF and HEIC container serialization.
 //!
-//! Takes pre-encoded AV1 frame data and produces a valid animated AVIF file
-//! with `ftyp(avis) + meta + moov + mdat` structure.
+//! Takes pre-encoded frame data and produces a timed-sequence file with a
+//! `ftyp + meta + moov + mdat` structure. The frames may be AV1-coded, giving
+//! an `avis` file whose track holds `av01` samples, or HEVC-coded, giving an
+//! `msf1`/`hevc` file whose track holds `hvc1` samples. Everything between —
+//! the track layout, the sample tables, the still item declared for players
+//! that only read images — is the same either way, because it is container
+//! structure and not codec structure.
 
-use crate::boxes::{Av1CBox, ClliBox, ColrBox, MdcvBox};
+use crate::boxes::{Av1CBox, ClliBox, ColrBox, HvcCBox, MdcvBox, MpegBox};
+use crate::writer::Writer;
 
 /// A single pre-encoded animation frame.
 #[derive(Clone)]
@@ -47,9 +53,71 @@ pub struct AnimatedImage {
     loop_count: u32,
     color_config: Av1CBox,
     alpha_config: Option<Av1CBox>,
+    /// When set, frames are HEVC-coded and the AV1 configurations are unused.
+    hevc_config: Option<HvcCBox>,
+    alpha_hevc_config: Option<HvcCBox>,
     colr: Option<ColrBox>,
     clli: Option<ClliBox>,
     mdcv: Option<MdcvBox>,
+}
+
+/// How one track's samples are configured, and everything that follows from
+/// it: the sample entry's type, the item type a still frame gets, and the
+/// pixel description the `pixi` property carries.
+///
+/// The two codecs differ in where the decoder's startup state lives. AV1 keeps
+/// the sequence header in the bitstream and `av1C` merely repeats it, so the
+/// caller supplies it alongside the configuration. HEVC keeps its parameter
+/// sets only in `hvcC`, so there is nothing beside it to pass.
+#[derive(Clone, Copy)]
+enum CodecConfig<'a> {
+    Av1 {
+        config: &'a Av1CBox,
+        seq_header: &'a [u8],
+    },
+    Hevc {
+        config: &'a HvcCBox,
+    },
+}
+
+impl CodecConfig<'_> {
+    /// The `stsd` sample entry type, which is also the still item's type.
+    fn entry_type(&self) -> &'static [u8; 4] {
+        match self {
+            Self::Av1 { .. } => b"av01",
+            Self::Hevc { .. } => b"hvc1",
+        }
+    }
+
+    /// Bits per channel, and how many channels there are.
+    fn pixel_description(&self) -> (u8, u8) {
+        match self {
+            Self::Av1 { config, .. } => {
+                let depth = bit_depth_from_av1c(config);
+                (if config.monochrome { 1 } else { 3 }, depth)
+            }
+            Self::Hevc { config } => {
+                // chroma_format_idc 0 is monochrome; 1, 2 and 3 are 4:2:0,
+                // 4:2:2 and 4:4:4, all of which carry three planes.
+                let channels = if config.chroma_format_idc == 0 { 1 } else { 3 };
+                (channels, config.bit_depth_luma)
+            }
+        }
+    }
+
+    /// Write the decoder configuration property or sub-box.
+    fn write_box(&self, out: &mut Vec<u8>) {
+        match self {
+            Self::Av1 { config, seq_header } => write_av1c_box(out, config, seq_header),
+            Self::Hevc { config } => {
+                // Reuse the record the rest of the crate writes rather than
+                // open-coding a second one here: the parser has a test holding
+                // the exact bytes, and two writers would drift apart silently.
+                let mut writer = Writer::new(out);
+                let _ = config.write(&mut writer);
+            }
+        }
+    }
 }
 
 impl Default for AnimatedImage {
@@ -64,6 +132,8 @@ impl AnimatedImage {
             loop_count: 0,
             color_config: Av1CBox::default(),
             alpha_config: None,
+            hevc_config: None,
+            alpha_hevc_config: None,
             colr: None,
             clli: None,
             mdcv: None,
@@ -82,6 +152,17 @@ impl AnimatedImage {
     pub fn set_color_config(&mut self, config: Av1CBox) -> &mut Self { self.color_config = config; self }
     /// AV1 codec configuration for the alpha track.
     pub fn set_alpha_config(&mut self, config: Av1CBox) -> &mut Self { self.alpha_config = Some(config); self }
+    /// HEVC codec configuration for the color track.
+    ///
+    /// Setting it makes the whole file HEVC: `hvc1` samples, an `msf1` brand,
+    /// and the sequence-header arguments to [`serialize`](Self::serialize)
+    /// ignored, since HEVC's parameter sets live in this record.
+    pub fn set_hevc_config(&mut self, config: HvcCBox) -> &mut Self { self.hevc_config = Some(config); self }
+    /// HEVC codec configuration for the alpha track.
+    ///
+    /// Only consulted when the color track is HEVC too. A file mixing codecs
+    /// between its colour and alpha tracks is not something any reader expects.
+    pub fn set_alpha_hevc_config(&mut self, config: HvcCBox) -> &mut Self { self.alpha_hevc_config = Some(config); self }
     /// CICP color info (nclx).
     pub fn set_colr(&mut self, colr: ColrBox) -> &mut Self { self.colr = Some(colr); self }
     /// Content Light Level Information (HDR).
@@ -89,12 +170,26 @@ impl AnimatedImage {
     /// Mastering Display Colour Volume (HDR).
     pub fn set_mdcv(&mut self, mdcv: MdcvBox) -> &mut Self { self.mdcv = Some(mdcv); self }
 
-    /// Serialize an animated AVIF file from pre-encoded AV1 frame data.
+    /// Serialize an animated file from pre-encoded frame data.
+    ///
+    /// The sequence-header arguments describe AV1 frames and are ignored when
+    /// [`set_hevc_config`](Self::set_hevc_config) has been called.
     pub fn serialize(&self, width: u32, height: u32, frames: &[AnimFrame<'_>],
                      color_seq_header: &[u8], alpha_seq_header: Option<&[u8]>) -> Vec<u8> {
-    let has_alpha = frames.iter().any(|f| f.alpha.is_some())
-        && self.alpha_config.is_some()
-        && alpha_seq_header.is_some();
+    let color_codec = match self.hevc_config.as_ref() {
+        Some(config) => CodecConfig::Hevc { config },
+        None => CodecConfig::Av1 { config: &self.color_config, seq_header: color_seq_header },
+    };
+    // An alpha track needs alpha data on the frames and a configuration to
+    // decode it against, in whichever codec the colour track chose.
+    let alpha_codec = match self.hevc_config.as_ref() {
+        Some(_) => self.alpha_hevc_config.as_ref().map(|config| CodecConfig::Hevc { config }),
+        None => match (self.alpha_config.as_ref(), alpha_seq_header) {
+            (Some(config), Some(seq_header)) => Some(CodecConfig::Av1 { config, seq_header }),
+            _ => None,
+        },
+    };
+    let has_alpha = frames.iter().any(|f| f.alpha.is_some()) && alpha_codec.is_some();
 
     let total_duration: u64 = frames.iter().map(|f| u64::from(f.duration)).sum();
     let durations: Vec<u32> = frames.iter().map(|f| f.duration).collect();
@@ -114,7 +209,7 @@ impl AnimatedImage {
     let mut out = Vec::new();
 
     // ftyp
-    write_ftyp(&mut out);
+    write_ftyp(&mut out, color_codec);
 
     // meta — declares primary item for still-frame interop. Returns the byte position
     // of the iloc extent_offset placeholder so we can patch it without scanning.
@@ -122,33 +217,31 @@ impl AnimatedImage {
         &mut out,
         width,
         height,
-        color_seq_header,
+        color_codec,
         color_frames.first().map(|f| f.len() as u32).unwrap_or(0),
-        &self.color_config,
         self.colr.as_ref(),
         self.clli.as_ref(),
         self.mdcv.as_ref(),
     );
 
     // moov — each write_track returns the byte position of its stco placeholder.
+    let repeat = self.loop_count == 0;
     let moov_pos = begin_box(&mut out, b"moov");
     write_mvhd(&mut out, self.timescale, total_duration, next_track_id);
     let color_stco_pos = write_track(
         &mut out, 1, width, height,
         self.timescale, total_duration,
         &color_frames, &durations, &sync_indices,
-        color_seq_header, &self.color_config,
-        false, self.loop_count == 0,
+        color_codec,
+        false, repeat,
     );
     let alpha_stco_pos = if has_alpha {
-        let alpha_seq = alpha_seq_header.unwrap();
-        let alpha_cfg = self.alpha_config.as_ref().unwrap();
         Some(write_track(
             &mut out, 2, width, height,
             self.timescale, total_duration,
             &alpha_frames, &durations, &sync_indices,
-            alpha_seq, alpha_cfg,
-            true, self.loop_count == 0,
+            alpha_codec.expect("has_alpha implies an alpha configuration"),
+            true, repeat,
         ))
     } else {
         None
@@ -221,15 +314,33 @@ const ILOC_PLACEHOLDER: u32 = 0xDEAD_BEE0;
 
 // ─── Top-level boxes ─────────────────────────────────────────────────
 
-fn write_ftyp(out: &mut Vec<u8>) {
+fn write_ftyp(out: &mut Vec<u8>, codec: CodecConfig<'_>) {
     let pos = begin_box(out, b"ftyp");
-    out.extend_from_slice(b"avis"); // major brand
-    write_u32(out, 0); // minor version
-    out.extend_from_slice(b"avis"); // compatible brands
-    out.extend_from_slice(b"avif");
-    out.extend_from_slice(b"mif1");
-    out.extend_from_slice(b"miaf");
-    out.extend_from_slice(b"iso8");
+    match codec {
+        CodecConfig::Av1 { .. } => {
+            out.extend_from_slice(b"avis"); // major brand
+            write_u32(out, 0); // minor version
+            out.extend_from_slice(b"avis"); // compatible brands
+            out.extend_from_slice(b"avif");
+            out.extend_from_slice(b"mif1");
+            out.extend_from_slice(b"miaf");
+            out.extend_from_slice(b"iso8");
+        }
+        CodecConfig::Hevc { .. } => {
+            // The brand set libheif writes for a HEIC sequence, in its order.
+            // `hevc` leads because the file is HEVC-coded throughout; `msf1`
+            // says there is an image sequence and `heic` that the still item
+            // inside it is readable on its own.
+            out.extend_from_slice(b"hevc"); // major brand
+            write_u32(out, 0); // minor version
+            out.extend_from_slice(b"mif1"); // compatible brands
+            out.extend_from_slice(b"heic");
+            out.extend_from_slice(b"miaf");
+            out.extend_from_slice(b"msf1");
+            out.extend_from_slice(b"iso8");
+            out.extend_from_slice(b"hevc");
+        }
+    }
     end_box(out, pos);
 }
 
@@ -238,9 +349,8 @@ fn write_meta(
     out: &mut Vec<u8>,
     width: u32,
     height: u32,
-    seq_header: &[u8],
+    codec: CodecConfig<'_>,
     first_frame_len: u32,
-    av1c: &Av1CBox,
     colr: Option<&ColrBox>,
     clli: Option<&ClliBox>,
     mdcv: Option<&MdcvBox>,
@@ -295,7 +405,7 @@ fn write_meta(
         write_fullbox(out, 2, 0);
         write_u16(out, 1); // item_id
         write_u16(out, 0); // protection_index
-        out.extend_from_slice(b"av01");
+        out.extend_from_slice(codec.entry_type());
         out.push(0); // name
         end_box(out, infe_pos);
 
@@ -319,21 +429,16 @@ fn write_meta(
                 end_box(out, pos);
             }
 
-            // Property 2: av1C
-            write_av1c_box(out, av1c, seq_header);
+            // Property 2: the decoder configuration, av1C or hvcC
+            codec.write_box(out);
 
             // Property 3: pixi
             {
                 let pos = begin_box(out, b"pixi");
                 write_fullbox(out, 0, 0);
-                if av1c.monochrome {
-                    out.push(1); // 1 channel
-                    out.push(bit_depth_from_av1c(av1c));
-                } else {
-                    out.push(3); // 3 channels
-                    let depth = bit_depth_from_av1c(av1c);
-                    out.push(depth);
-                    out.push(depth);
+                let (channels, depth) = codec.pixel_description();
+                out.push(channels);
+                for _ in 0..channels {
                     out.push(depth);
                 }
                 end_box(out, pos);
@@ -364,7 +469,7 @@ fn write_meta(
             write_fullbox(out, 0, 0);
             write_u32(out, 1); // entry_count
             write_u16(out, 1); // item_id
-            // Count associations: ispe + av1C(essential) + pixi + optional colr/clli/mdcv
+            // Count associations: ispe + config(essential) + pixi + optional colr/clli/mdcv
             let mut assoc_count: u8 = 3;
             let has_colr = colr.is_some_and(|c| *c != ColrBox::default());
             if has_colr { assoc_count += 1; }
@@ -372,7 +477,7 @@ fn write_meta(
             if mdcv.is_some() { assoc_count += 1; }
             out.push(assoc_count);
             out.push(0x01); // property 1 (ispe), not essential
-            out.push(0x82); // property 2 (av1C), essential
+            out.push(0x82); // property 2 (av1C or hvcC), essential
             out.push(0x03); // property 3 (pixi), not essential
             let mut next_prop = 4u8;
             if has_colr {
@@ -427,8 +532,7 @@ fn write_track(
     frames: &[&[u8]],
     durations: &[u32],
     sync_indices: &[u32],
-    seq_header: &[u8],
-    av1c: &Av1CBox,
+    codec: CodecConfig<'_>,
     is_alpha: bool,
     repeat: bool,
 ) -> usize {
@@ -545,13 +649,13 @@ fn write_track(
             {
                 let stbl_pos = begin_box(out, b"stbl");
 
-                // stsd with av01 + av1C
+                // stsd with the sample entry and its decoder configuration
                 {
                     let pos = begin_box(out, b"stsd");
                     write_fullbox(out, 0, 0);
                     write_u32(out, 1); // entry_count
 
-                    let av01_pos = begin_box(out, b"av01");
+                    let entry_pos = begin_box(out, codec.entry_type());
                     out.extend_from_slice(&[0u8; 6]); // reserved
                     write_u16(out, 1); // data_reference_index
                     write_u16(out, 0); // pre_defined
@@ -569,10 +673,33 @@ fn write_track(
                     write_u16(out, 0x0018); // depth = 24
                     out.extend_from_slice(&0xFFFFu16.to_be_bytes()); // pre_defined = -1
 
-                    // av1C sub-box with seq header
-                    write_av1c_box(out, av1c, seq_header);
+                    codec.write_box(out);
 
-                    end_box(out, av01_pos);
+                    // ccst — MIAF requires the coding constraints of an image
+                    // sequence to be stated in its sample entry, and both
+                    // libheif and libavif write it. The values are derived
+                    // rather than fixed: a track whose every sample is a sync
+                    // sample really is all-intra, and one that is not must not
+                    // claim to be, or a reader may skip building the reference
+                    // machinery the later frames need.
+                    {
+                        let ccst_pos = begin_box(out, b"ccst");
+                        write_fullbox(out, 0, 0);
+                        let all_intra = sync_indices.len() == frames.len();
+                        let mut byte = 1u8 << 6; // intra_pred_used
+                        if all_intra {
+                            byte |= 1 << 7; // all_ref_pics_intra
+                        } else {
+                            // max_ref_per_pic_used, four bits; 15 states that
+                            // no bound is being claimed.
+                            byte |= 0b1111 << 2;
+                        }
+                        out.push(byte);
+                        out.extend_from_slice(&[0u8; 3]); // reserved
+                        end_box(out, ccst_pos);
+                    }
+
+                    end_box(out, entry_pos);
                     end_box(out, pos);
                 }
 
@@ -751,6 +878,7 @@ fn fixed_16_16_saturating(value: u32) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::boxes::HvcCParameterSet;
 
     fn basic_av1c() -> Av1CBox {
         Av1CBox {
@@ -905,7 +1033,20 @@ mod tests {
         let avif = image.serialize(70_000, 70_000, &frames, b"seq", None);
         // File is structurally valid.
         assert_eq!(&avif[4..8], b"ftyp");
-        let parser = zenavif_parse::AvifParser::from_bytes(&avif).unwrap();
+        // 70000 squared is 4.9 gigapixels, well past the parser's default
+        // ceiling, and the point here is the writer's arithmetic rather than
+        // whether anything would agree to decode a picture that size. Raise
+        // the limit for the read-back so the structure is what is checked.
+        let config = zenavif_parse::DecodeConfig {
+            total_megapixels_limit: None,
+            ..zenavif_parse::DecodeConfig::default()
+        };
+        let parser = zenavif_parse::AvifParser::from_bytes_with_config(
+            &avif,
+            &config,
+            &zenavif_parse::Unstoppable,
+        )
+        .unwrap();
         let info = parser.animation_info().expect("animation info");
         assert_eq!(info.frame_count, 1);
     }
@@ -924,5 +1065,161 @@ mod tests {
         let info = parser.animation_info().expect("animation info");
         assert_eq!(info.frame_count, 3);
         assert_eq!(info.timescale, 1000);
+    }
+
+    fn basic_hvcc() -> HvcCBox {
+        HvcCBox {
+            general_profile_idc: 1, // Main
+            general_level_idc: 60,
+            chroma_format_idc: 1, // 4:2:0
+            bit_depth_luma: 8,
+            bit_depth_chroma: 8,
+            nal_length_size: 4,
+            parameter_sets: vec![
+                HvcCParameterSet {
+                    nal_unit_type: 32, // VPS
+                    array_completeness: true,
+                    data: vec![0x40, 0x01, 0x0c],
+                },
+                HvcCParameterSet {
+                    nal_unit_type: 33, // SPS
+                    array_completeness: true,
+                    data: vec![0x42, 0x01, 0x01],
+                },
+                HvcCParameterSet {
+                    nal_unit_type: 34, // PPS
+                    array_completeness: true,
+                    data: vec![0x44, 0x01, 0xc0],
+                },
+            ],
+            ..HvcCBox::default()
+        }
+    }
+
+    #[test]
+    fn hevc_sequence_is_a_heic_sequence_the_parser_reads_back() {
+        let frames = [
+            AnimFrame::new(b"hevcframe1", 40).with_sync(true),
+            AnimFrame::new(b"hevcframe2", 40),
+            AnimFrame::new(b"hevcframe3", 40),
+        ];
+        let mut image = AnimatedImage::new();
+        image.set_hevc_config(basic_hvcc());
+        // The AV1 sequence header argument is meaningless for HEVC and must
+        // not leak into the file: HEVC's parameter sets live in hvcC alone.
+        let heic = image.serialize(96, 64, &frames, b"AV1SEQHEADER", None);
+
+        assert_eq!(&heic[4..8], b"ftyp");
+        assert_eq!(&heic[8..12], b"hevc");
+        assert!(
+            heic.windows(4).any(|w| w == b"msf1"),
+            "an image sequence must declare the msf1 brand"
+        );
+        assert!(
+            !heic.windows(4).any(|w| w == b"av01") && !heic.windows(4).any(|w| w == b"av1C"),
+            "no AV1 structures belong in an HEVC file"
+        );
+        assert!(
+            !heic.windows(12).any(|w| w == b"AV1SEQHEADER"),
+            "the AV1 sequence header argument must be ignored, not written"
+        );
+        for frame in &frames {
+            assert!(heic.windows(frame.color.len()).any(|w| w == frame.color));
+        }
+
+        let parser = zenavif_parse::AvifParser::from_bytes(&heic).unwrap();
+        let info = parser.animation_info().expect("animation info");
+        assert_eq!(info.frame_count, 3);
+        assert_eq!(info.timescale, 1000);
+
+        // The track's own sample entry must carry the configuration. Reading
+        // the still item's instead is the bug that let one frame decode and
+        // every later one fail, so assert on the track's specifically.
+        let config = parser.track_hevc_config().expect("track hvcC");
+        assert_eq!(config.nal_length_size, 4);
+        assert_eq!(
+            config
+                .parameter_sets
+                .iter()
+                .map(|ps| ps.nal_unit_type)
+                .collect::<Vec<_>>(),
+            vec![32, 33, 34]
+        );
+
+        for index in 0..info.frame_count {
+            let frame = parser.frame(index).expect("frame");
+            assert_eq!(&frame.data[..], frames[index].color);
+            assert_eq!(frame.duration_ticks, 40);
+        }
+    }
+
+    #[test]
+    fn hevc_sequence_carries_alpha_in_its_own_track() {
+        let frames = [
+            AnimFrame::new(b"c1", 100).with_alpha(b"a1").with_sync(true),
+            AnimFrame::new(b"c2", 100).with_alpha(b"a2"),
+        ];
+        let mut image = AnimatedImage::new();
+        image.set_hevc_config(basic_hvcc());
+        let mut alpha = basic_hvcc();
+        alpha.chroma_format_idc = 0; // monochrome
+        image.set_alpha_hevc_config(alpha);
+        let heic = image.serialize(32, 32, &frames, b"", None);
+
+        let parser = zenavif_parse::AvifParser::from_bytes(&heic).unwrap();
+        let info = parser.animation_info().expect("animation info");
+        assert_eq!(info.frame_count, 2);
+        assert!(info.has_alpha, "the alpha track should be found");
+        for name in [&b"a1"[..], &b"a2"[..]] {
+            assert!(heic.windows(2).any(|w| w == name));
+        }
+    }
+
+    #[test]
+    fn an_hevc_colour_track_without_an_alpha_config_writes_no_alpha_track() {
+        // Alpha data with nothing to decode it against is not an alpha track;
+        // writing one would produce a track whose samples cannot be read.
+        let frames = [AnimFrame::new(b"c1", 100).with_alpha(b"a1").with_sync(true)];
+        let mut image = AnimatedImage::new();
+        image.set_hevc_config(basic_hvcc());
+        let heic = image.serialize(32, 32, &frames, b"", None);
+
+        let parser = zenavif_parse::AvifParser::from_bytes(&heic).unwrap();
+        let info = parser.animation_info().expect("animation info");
+        assert!(!info.has_alpha);
+        assert!(!heic.windows(2).any(|w| w == b"a1"), "alpha data was written anyway");
+    }
+
+    #[test]
+    fn coding_constraints_state_whether_the_track_is_all_intra() {
+        // MIAF wants ccst in the sample entry, and a track that is not
+        // all-intra must not say it is.
+        let ccst_payload = |heic: &[u8]| -> u8 {
+            let at = heic.windows(4).position(|w| w == b"ccst").expect("ccst");
+            heic[at + 8] // past the fourcc and the version/flags word
+        };
+
+        let mut image = AnimatedImage::new();
+        image.set_hevc_config(basic_hvcc());
+
+        let all_intra = [
+            AnimFrame::new(b"k1", 10).with_sync(true),
+            AnimFrame::new(b"k2", 10).with_sync(true),
+        ];
+        assert_eq!(
+            ccst_payload(&image.serialize(16, 16, &all_intra, b"", None)) >> 7,
+            1,
+            "every sample is a sync sample, so all_ref_pics_intra should be set"
+        );
+
+        let inter = [
+            AnimFrame::new(b"k1", 10).with_sync(true),
+            AnimFrame::new(b"p2", 10),
+        ];
+        assert_eq!(
+            ccst_payload(&image.serialize(16, 16, &inter, b"", None)) >> 7,
+            0,
+            "a track with inter frames must not claim to be all-intra"
+        );
     }
 }

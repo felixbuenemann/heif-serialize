@@ -21,7 +21,10 @@ avif-parse = "2.0"
 zenrav1e = { version = "0.1.4", default-features = false }
 zenpixels-convert = { version = "0.2.13", default-features = false }
 mp4parse = "0.17"
-zenavif-parse = { version = "0.6.0"}
+# 0.7 because the tests read back HEVC sequences, which the parser only
+# understands from that release on. The workspace sibling is already 0.7.0,
+# so this also stops the tests resolving an older copy from the registry.
+zenavif-parse = { version = "0.7.0" }
 
 [badges]
 maintenance = { status = "passively-maintained" }
