@@ -14,6 +14,10 @@ use std::io;
 /// with per-encode data (layout, dimensions, tile data) to produce the AVIF file.
 pub struct GridImage {
     color_config: Av1CBox,
+    /// When set, tiles are HEVC-coded: `hvc1` items carrying this `hvcC`
+    /// rather than `av01` items carrying `av1C`. A grid's tiles share one
+    /// configuration, which is what makes a single record enough.
+    hevc_config: Option<HvcCBox>,
     alpha_config: Option<Av1CBox>,
     depth_bits: u8,
     colr: Option<ColrBox>,
@@ -29,6 +33,7 @@ impl GridImage {
     pub fn new() -> Self {
         Self {
             color_config: Av1CBox::default(),
+            hevc_config: None,
             alpha_config: None,
             depth_bits: 8,
             colr: None,
@@ -38,6 +43,16 @@ impl GridImage {
 
     /// AV1 codec configuration for color tiles.
     pub fn set_color_config(&mut self, config: Av1CBox) -> &mut Self { self.color_config = config; self }
+
+    /// Code the tiles with HEVC instead of AV1.
+    ///
+    /// Tile payloads must then be HEVC item payloads — length-prefixed NAL
+    /// units at the width this record declares — rather than AV1 bitstreams.
+    #[inline]
+    pub fn set_hevc_config(&mut self, config: HvcCBox) -> &mut Self {
+        self.hevc_config = Some(config);
+        self
+    }
     /// AV1 codec configuration for alpha tiles.
     pub fn set_alpha_config(&mut self, config: Av1CBox) -> &mut Self { self.alpha_config = Some(config); self }
     /// Bit depth (8, 10, or 12). Default: 8.
@@ -106,6 +121,7 @@ impl GridImage {
             ipco_ids,
             tile_count,
             has_alpha,
+            self.hevc_config.is_some(),
         );
 
         let mut out = Vec::new();
@@ -146,7 +162,11 @@ impl GridImage {
     ) -> io::Result<IpcoIds> {
         let ispe_output = push_prop(ipco, IpcoProp::Ispe(IspeBox { width: output_width, height: output_height }))?;
         let ispe_tile = push_prop(ipco, IpcoProp::Ispe(IspeBox { width: tile_width, height: tile_height }))?;
-        let av1c_color = push_prop(ipco, IpcoProp::Av1C(self.color_config))?;
+        let av1c_color = if let Some(ref hevc) = self.hevc_config {
+            push_prop(ipco, IpcoProp::HvcC(hevc.clone()))?
+        } else {
+            push_prop(ipco, IpcoProp::Av1C(self.color_config))?
+        };
         let pixi_color = push_prop(
             ipco,
             IpcoProp::Pixi(PixiBox {
@@ -315,6 +335,8 @@ struct TileGroup {
     ispe_tile: u8,
     av1c_essential: u8,
     tile_count: usize,
+    /// Whether the tiles are HEVC-coded, which decides their item type.
+    hevc: bool,
 }
 
 fn add_tile_items(
@@ -325,6 +347,7 @@ fn add_tile_items(
     ipco_ids: IpcoIds,
     tile_count: usize,
     has_alpha: bool,
+    hevc: bool,
 ) {
     add_one_tile_group(image_items, ipma_entries, irefs, TileGroup {
         parent_grid_id: ids.color_grid_id,
@@ -332,6 +355,7 @@ fn add_tile_items(
         ispe_tile: ipco_ids.ispe_tile,
         av1c_essential: ipco_ids.av1c_color | ESSENTIAL_BIT,
         tile_count,
+        hevc,
     });
     if has_alpha {
         add_one_tile_group(image_items, ipma_entries, irefs, TileGroup {
@@ -340,6 +364,7 @@ fn add_tile_items(
             ispe_tile: ipco_ids.ispe_tile,
             av1c_essential: ipco_ids.av1c_alpha.expect("alpha av1c when has_alpha") | ESSENTIAL_BIT,
             tile_count,
+            hevc,
         });
     }
 }
@@ -354,7 +379,7 @@ fn add_one_tile_group(
         let tile_id = g.base_id + i as u16;
         image_items.push(InfeBox {
             id: tile_id,
-            typ: FourCC(*b"av01"),
+            typ: if g.hevc { FourCC(*b"hvc1") } else { FourCC(*b"av01") },
             name: "",
             content_type: "",
         });

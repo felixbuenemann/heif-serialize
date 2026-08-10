@@ -83,7 +83,7 @@ fn add_gain_map<'data>(
 
     image_items.push(InfeBox {
         id: gain_map_id,
-        typ: FourCC(*b"av01"),
+        typ: if gm.hevc_config.is_some() { FourCC(*b"hvc1") } else { FourCC(*b"av01") },
         name: "",
         content_type: "",
     });
@@ -107,7 +107,10 @@ fn add_gain_map<'data>(
     } else {
         0 // 4:2:0 or monochrome
     };
-    let gm_av1c = push_prop(ipco, IpcoProp::Av1C(Av1CBox {
+    let gm_codec_prop = if let Some(ref hevc) = gm.hevc_config {
+        push_prop(ipco, IpcoProp::HvcC(hevc.clone()))?
+    } else {
+        push_prop(ipco, IpcoProp::Av1C(Av1CBox {
         seq_profile: gm_profile,
         seq_level_idx_0: 31,
         seq_tier_0: false,
@@ -117,10 +120,11 @@ fn add_gain_map<'data>(
         chroma_subsampling_x: gm.chroma_subsampling.horizontal,
         chroma_subsampling_y: gm.chroma_subsampling.vertical,
         chroma_sample_position: 0,
-    }))?;
+        }))?
+    };
     ipma_entries.push(IpmaEntry {
         item_id: gain_map_id,
-        prop_ids: from_array([gm_ispe, gm_pixi, gm_av1c | ESSENTIAL_BIT]),
+        prop_ids: from_array([gm_ispe, gm_pixi, gm_codec_prop | ESSENTIAL_BIT]),
     });
     iloc_items.push(IlocItem {
         id: gain_map_id,
@@ -216,6 +220,10 @@ pub struct Aviffy {
     colr: ColrBox,
     clli: Option<ClliBox>,
     mdcv: Option<MdcvBox>,
+    /// When set, the alpha auxiliary item is HEVC-coded rather than AV1.
+    /// Separate from the primary's config because alpha is its own coded
+    /// image — monochrome, and free to differ in depth.
+    alpha_hevc_config: Option<HvcCBox>,
     irot: Option<IrotBox>,
     imir: Option<ImirBox>,
     clap: Option<ClapBox>,
@@ -263,6 +271,11 @@ struct GainMapConfig {
     chroma_subsampling: ChromaSubsampling,
     /// Whether the gain map is monochrome.
     monochrome: bool,
+    /// When set, the map is HEVC-coded: an `hvc1` item carrying this `hvcC`
+    /// rather than an `av01` carrying `av1C`. The base image and its map are
+    /// independent in principle, but in practice a HEIC base wants a HEVC
+    /// map — a reader that can decode one can decode the other.
+    hevc_config: Option<HvcCBox>,
 }
 
 /// Makes an AVIF file given encoded AV1 data (create the data with [`rav1e`](https://lib.rs/rav1e))
@@ -307,6 +320,7 @@ impl Aviffy {
             premultiplied_alpha: false,
             min_seq_profile: 1,
             hevc_config: None,
+            alpha_hevc_config: None,
             chroma_subsampling: ChromaSubsampling::NONE,
             monochrome: false,
             width: 0,
@@ -528,6 +542,7 @@ impl Aviffy {
             alt_icc: None,
             chroma_subsampling: ChromaSubsampling::YUV420,
             monochrome: false,
+            hevc_config: None,
         });
         self
     }
@@ -576,6 +591,29 @@ impl Aviffy {
     /// Defaults to false. Only meaningful if
     /// [`set_gain_map`](Self::set_gain_map) has been called.
     #[inline]
+    /// Code the alpha auxiliary item with HEVC instead of AV1.
+    ///
+    /// The alpha payload must then be an HEVC item payload rather than an AV1
+    /// bitstream, as for the primary item.
+    #[inline]
+    pub fn set_alpha_hevc_config(&mut self, config: HvcCBox) -> &mut Self {
+        self.alpha_hevc_config = Some(config);
+        self
+    }
+
+    /// Code the gain map with HEVC instead of AV1.
+    ///
+    /// The `av1_data` passed to [`Self::set_gain_map`] must then be an HEVC
+    /// item payload — length-prefixed NAL units at the width this record
+    /// declares — rather than an AV1 bitstream.
+    #[inline]
+    pub fn set_gain_map_hevc_config(&mut self, config: HvcCBox) -> &mut Self {
+        if let Some(ref mut gm) = self.gain_map {
+            gm.hevc_config = Some(config);
+        }
+        self
+    }
+
     pub fn set_gain_map_monochrome(&mut self, monochrome: bool) -> &mut Self {
         if let Some(ref mut gm) = self.gain_map {
             gm.monochrome = monochrome;
@@ -900,7 +938,11 @@ impl Aviffy {
     ) -> io::Result<()> {
         image_items.push(InfeBox {
             id: alpha_image_id,
-            typ: FourCC(*b"av01"),
+            typ: if self.alpha_hevc_config.is_some() {
+                FourCC(*b"hvc1")
+            } else {
+                FourCC(*b"av01")
+            },
             name: "",
             content_type: "",
         });
@@ -917,7 +959,10 @@ impl Aviffy {
             });
         }
 
-        let av1c_alpha_prop = push_prop(ipco, IpcoProp::Av1C(Av1CBox {
+        let alpha_codec_prop = if let Some(ref hevc) = self.alpha_hevc_config {
+            push_prop(ipco, IpcoProp::HvcC(hevc.clone()))?
+        } else {
+            push_prop(ipco, IpcoProp::Av1C(Av1CBox {
             seq_profile: if alpha_depth_bits >= 12 { 2 } else { 0 },
             seq_level_idx_0: 31,
             seq_tier_0: false,
@@ -927,7 +972,8 @@ impl Aviffy {
             chroma_subsampling_x: true,
             chroma_subsampling_y: true,
             chroma_sample_position: 0,
-        }))?;
+            }))?
+        };
         let pixi_1 = push_prop(ipco, IpcoProp::Pixi(PixiBox { channels: 1, depth: alpha_depth_bits }))?;
         let auxc_prop = push_prop(ipco, IpcoProp::AuxC(AuxCBox {
             urn: "urn:mpeg:mpegB:cicp:systems:auxiliary:alpha",
@@ -935,7 +981,7 @@ impl Aviffy {
 
         ipma_entries.push(IpmaEntry {
             item_id: alpha_image_id,
-            prop_ids: from_array([ispe_prop, av1c_alpha_prop | ESSENTIAL_BIT, auxc_prop, pixi_1]),
+            prop_ids: from_array([ispe_prop, alpha_codec_prop | ESSENTIAL_BIT, auxc_prop, pixi_1]),
         });
 
         // Alpha-first iloc order lets a partial decode show alpha before color.
