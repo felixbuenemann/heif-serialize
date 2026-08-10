@@ -783,6 +783,112 @@ impl MpegBox for Av1CBox {
     }
 }
 
+/// One parameter-set NAL unit written into an `hvcC` record.
+///
+/// A bare NAL unit: no length prefix and no Annex B start code.
+#[derive(Debug, Clone)]
+pub struct HvcCParameterSet {
+    /// NAL unit type, six bits (32 = VPS, 33 = SPS, 34 = PPS).
+    pub nal_unit_type: u8,
+    /// Whether this array holds every NAL of its type in the stream.
+    pub array_completeness: bool,
+    /// The NAL unit, header included.
+    pub data: Vec<u8>,
+}
+
+/// HEVC decoder configuration record, the `hvcC` counterpart to [`Av1CBox`].
+///
+/// See ISO/IEC 14496-15 § 8.3.3.1. Unlike av1C this is variable length: it
+/// carries the VPS, SPS and PPS that AV1 keeps inside its sequence header,
+/// and a decoder needs them before the item payload.
+#[derive(Debug, Clone)]
+pub struct HvcCBox {
+    pub general_profile_space: u8,
+    pub general_tier_flag: bool,
+    pub general_profile_idc: u8,
+    pub general_profile_compatibility_flags: u32,
+    pub general_constraint_indicator_flags: [u8; 6],
+    pub general_level_idc: u8,
+    /// 0 = monochrome, 1 = 4:2:0, 2 = 4:2:2, 3 = 4:4:4.
+    pub chroma_format_idc: u8,
+    pub bit_depth_luma: u8,
+    pub bit_depth_chroma: u8,
+    /// Bytes of the length prefix on each NAL in the payload: 1, 2 or 4.
+    pub nal_length_size: u8,
+    pub parameter_sets: Vec<HvcCParameterSet>,
+}
+
+impl Default for HvcCBox {
+    /// Main Still Picture, 8-bit 4:2:0, four-byte NAL length prefixes.
+    fn default() -> Self {
+        Self {
+            general_profile_space: 0,
+            general_tier_flag: false,
+            general_profile_idc: 3,
+            general_profile_compatibility_flags: 0,
+            general_constraint_indicator_flags: [0; 6],
+            general_level_idc: 30,
+            chroma_format_idc: 1,
+            bit_depth_luma: 8,
+            bit_depth_chroma: 8,
+            nal_length_size: 4,
+            parameter_sets: Vec::new(),
+        }
+    }
+}
+
+impl HvcCBox {
+    /// Bytes the parameter-set arrays occupy, one array per set.
+    ///
+    /// Sets are written one per array rather than grouped by NAL type. Both
+    /// are legal, and one-per-array keeps the written order the caller's.
+    fn arrays_len(&self) -> usize {
+        self.parameter_sets.iter().map(|ps| 1 + 2 + 2 + ps.data.len()).sum()
+    }
+}
+
+/// Fixed portion of the record, up to and including numOfArrays.
+const HVCC_FIXED_LEN: usize = 23;
+
+impl MpegBox for HvcCBox {
+    #[inline(always)]
+    fn len(&self) -> usize {
+        BASIC_BOX_SIZE + HVCC_FIXED_LEN + self.arrays_len()
+    }
+
+    fn write<B: WriterBackend>(&self, w: &mut Writer<B>) -> Result<(), B::Error> {
+        let mut b = w.basic_box(self.len(), *b"hvcC")?;
+        b.u8(1)?; // configurationVersion
+        b.u8(
+            (self.general_profile_space << 6)
+                | (u8::from(self.general_tier_flag) << 5)
+                | (self.general_profile_idc & 0x1F),
+        )?;
+        b.u32(self.general_profile_compatibility_flags)?;
+        b.push(&self.general_constraint_indicator_flags)?;
+        b.u8(self.general_level_idc)?;
+        // Reserved bits are ones, per the spec's '1111'b / '111111'b fills.
+        b.u16(0xF000)?; // reserved | min_spatial_segmentation_idc = 0
+        b.u8(0xFC)?; // reserved | parallelismType = 0
+        b.u8(0xFC | (self.chroma_format_idc & 0x03))?;
+        b.u8(0xF8 | (self.bit_depth_luma.saturating_sub(8) & 0x07))?;
+        b.u8(0xF8 | (self.bit_depth_chroma.saturating_sub(8) & 0x07))?;
+        b.u16(0)?; // avgFrameRate: unspecified
+        // constantFrameRate 0 | numTemporalLayers 1 | temporalIdNested 1 |
+        // lengthSizeMinusOne
+        b.u8(0b000_01_1_00 | (self.nal_length_size.saturating_sub(1) & 0x03))?;
+        b.u8(self.parameter_sets.len() as u8)?;
+
+        for ps in &self.parameter_sets {
+            b.u8((u8::from(ps.array_completeness) << 7) | (ps.nal_unit_type & 0x3F))?;
+            b.u16(1)?; // numNalus in this array
+            b.u16(ps.data.len() as u16)?;
+            b.push(&ps.data)?;
+        }
+        Ok(())
+    }
+}
+
 #[derive(Debug, Copy, Clone)]
 pub struct PitmBox(pub u16);
 
@@ -1038,5 +1144,101 @@ impl MdatBox {
             b.push(ch.data)?;
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod hvcc_box_tests {
+    use super::*;
+
+    fn write_box<T: MpegBox>(b: &T) -> Vec<u8> {
+        let mut out = Vec::new();
+        {
+            let mut w = Writer::new(&mut out);
+            assert!(b.write(&mut w).is_ok(), "write");
+        }
+        out
+    }
+
+    fn sample() -> HvcCBox {
+        HvcCBox {
+            general_tier_flag: true,
+            general_profile_idc: 2,
+            general_level_idc: 120,
+            chroma_format_idc: 1,
+            bit_depth_luma: 10,
+            bit_depth_chroma: 10,
+            nal_length_size: 4,
+            parameter_sets: vec![
+                HvcCParameterSet { nal_unit_type: 32, array_completeness: true, data: vec![0x40, 0x01, 0x0C] },
+                HvcCParameterSet { nal_unit_type: 33, array_completeness: false, data: vec![0x42, 0x01, 0x01, 0x60] },
+            ],
+            ..HvcCBox::default()
+        }
+    }
+
+    /// The record's fields must land on the offsets ISO/IEC 14496-15 § 8.3.3.1
+    /// gives them, or a conforming reader picks up the wrong bytes.
+    #[test]
+    fn the_fixed_header_lands_on_its_spec_offsets() {
+        let bytes = write_box(&sample());
+        assert_eq!(&bytes[4..8], b"hvcC");
+        let r = &bytes[8..];
+
+        assert_eq!(r[0], 1, "configurationVersion");
+        // profile_space 0 | tier 1 | profile_idc 2
+        assert_eq!(r[1], 0b00_1_00010);
+        assert_eq!(r[12], 120, "general_level_idc");
+        assert_eq!(r[16] & 0x03, 1, "chroma_format_idc");
+        assert_eq!(r[17] & 0x07, 2, "bit_depth_luma_minus8");
+        assert_eq!(r[18] & 0x07, 2, "bit_depth_chroma_minus8");
+        assert_eq!(r[21] & 0x03, 3, "lengthSizeMinusOne for a four-byte prefix");
+        assert_eq!(r[22], 2, "numOfArrays");
+    }
+
+    /// Reserved bit runs are ones. A reader masking them off is unaffected,
+    /// but one that compares whole bytes against the spec's fill is not.
+    #[test]
+    fn reserved_bits_are_written_as_ones() {
+        let bytes = write_box(&sample());
+        let r = &bytes[8..];
+        assert_eq!(r[15] & 0xFC, 0xFC, "parallelismType reserved");
+        assert_eq!(r[16] & 0xFC, 0xFC, "chroma_format_idc reserved");
+        assert_eq!(r[17] & 0xF8, 0xF8, "bit_depth_luma reserved");
+        assert_eq!(r[18] & 0xF8, 0xF8, "bit_depth_chroma reserved");
+    }
+
+    #[test]
+    fn each_parameter_set_is_written_as_its_own_array() {
+        let bytes = write_box(&sample());
+        let r = &bytes[8..];
+        let mut p = 23;
+
+        assert_eq!(r[p], 0x80 | 32, "VPS, marked complete");
+        assert_eq!(u16::from_be_bytes([r[p + 1], r[p + 2]]), 1, "numNalus");
+        assert_eq!(u16::from_be_bytes([r[p + 3], r[p + 4]]), 3, "nalUnitLength");
+        assert_eq!(&r[p + 5..p + 8], &[0x40, 0x01, 0x0C]);
+        p += 5 + 3;
+
+        assert_eq!(r[p], 33, "SPS, not marked complete");
+        assert_eq!(u16::from_be_bytes([r[p + 3], r[p + 4]]), 4, "nalUnitLength");
+        assert_eq!(&r[p + 5..p + 9], &[0x42, 0x01, 0x01, 0x60]);
+    }
+
+    /// len() drives the box header, so a mismatch corrupts every following box.
+    #[test]
+    fn the_declared_length_matches_what_is_written() {
+        let b = sample();
+        let bytes = write_box(&b);
+        assert_eq!(bytes.len(), b.len(), "written bytes vs declared len()");
+        assert_eq!(u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]) as usize, bytes.len());
+    }
+
+    #[test]
+    fn a_record_with_no_parameter_sets_is_still_well_formed() {
+        let b = HvcCBox::default();
+        let bytes = write_box(&b);
+        assert_eq!(bytes.len(), BASIC_BOX_SIZE + 23);
+        assert_eq!(bytes[8 + 22], 0, "numOfArrays");
     }
 }
