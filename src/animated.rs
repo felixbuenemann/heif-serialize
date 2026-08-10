@@ -8,7 +8,7 @@
 //! that only read images — is the same either way, because it is container
 //! structure and not codec structure.
 
-use crate::boxes::{Av1CBox, ClliBox, ColrBox, HvcCBox, MdcvBox, MpegBox};
+use crate::boxes::{Av1CBox, ClapBox, ClliBox, ColrBox, HvcCBox, MdcvBox, MpegBox};
 use crate::writer::Writer;
 
 /// A single pre-encoded animation frame.
@@ -59,6 +59,7 @@ pub struct AnimatedImage {
     colr: Option<ColrBox>,
     clli: Option<ClliBox>,
     mdcv: Option<MdcvBox>,
+    clap: Option<ClapBox>,
 }
 
 /// How one track's samples are configured, and everything that follows from
@@ -137,6 +138,7 @@ impl AnimatedImage {
             colr: None,
             clli: None,
             mdcv: None,
+            clap: None,
         }
     }
 
@@ -170,6 +172,15 @@ impl AnimatedImage {
     pub fn set_clli(&mut self, clli: ClliBox) -> &mut Self { self.clli = Some(clli); self }
     /// Mastering Display Colour Volume (HDR).
     pub fn set_mdcv(&mut self, mdcv: MdcvBox) -> &mut Self { self.mdcv = Some(mdcv); self }
+    /// The region of each coded frame that is the picture.
+    ///
+    /// Needed whenever the coded size is not the size to show, which for HEVC
+    /// is any picture smaller than a coding tree unit: the codec cannot code
+    /// one, so the encoder pads and the container says where the real picture
+    /// is. Written into the sample entry, and the track header then states the
+    /// cropped size rather than the coded one — a player takes its dimensions
+    /// from there.
+    pub fn set_clean_aperture(&mut self, clap: ClapBox) -> &mut Self { self.clap = Some(clap); self }
 
     /// Serialize an animated file from pre-encoded frame data.
     ///
@@ -223,6 +234,7 @@ impl AnimatedImage {
         self.colr.as_ref(),
         self.clli.as_ref(),
         self.mdcv.as_ref(),
+        self.clap.as_ref(),
     );
 
     // moov — each write_track returns the byte position of its stco placeholder.
@@ -237,7 +249,7 @@ impl AnimatedImage {
         &mut out, 1, width, height,
         self.timescale, total_duration,
         &color_frames, &durations, &sync_indices,
-        color_codec,
+        color_codec, self.clap.as_ref(),
         false, presented,
     );
     let alpha_stco_pos = if has_alpha {
@@ -246,6 +258,7 @@ impl AnimatedImage {
             self.timescale, total_duration,
             &alpha_frames, &durations, &sync_indices,
             alpha_codec.expect("has_alpha implies an alpha configuration"),
+            self.clap.as_ref(),
             true, presented,
         ))
     } else {
@@ -359,6 +372,7 @@ fn write_meta(
     colr: Option<&ColrBox>,
     clli: Option<&ClliBox>,
     mdcv: Option<&MdcvBox>,
+    clap: Option<&ClapBox>,
 ) -> usize {
     // Records the byte position of the iloc extent_offset placeholder.
     let iloc_offset_pos: usize;
@@ -465,6 +479,13 @@ fn write_meta(
                 write_mdcv(out, mdcv);
             }
 
+            // Property 7: clap (optional). The still item is coded at the
+            // padded size like every frame, so it needs the same crop.
+            if let Some(clap) = clap {
+                let mut writer = Writer::new(out);
+                let _ = clap.write(&mut writer);
+            }
+
             end_box(out, ipco_pos);
         }
 
@@ -480,6 +501,7 @@ fn write_meta(
             if has_colr { assoc_count += 1; }
             if clli.is_some() { assoc_count += 1; }
             if mdcv.is_some() { assoc_count += 1; }
+            if clap.is_some() { assoc_count += 1; }
             out.push(assoc_count);
             out.push(0x01); // property 1 (ispe), not essential
             out.push(0x82); // property 2 (av1C or hvcC), essential
@@ -495,6 +517,11 @@ fn write_meta(
             }
             if mdcv.is_some() {
                 out.push(next_prop);
+                next_prop += 1;
+            }
+            if clap.is_some() {
+                // Essential: a reader that ignores it shows the padding.
+                out.push(0x80 | next_prop);
                 let _ = next_prop;
             }
             end_box(out, pos);
@@ -591,6 +618,7 @@ fn write_track(
     durations: &[u32],
     sync_indices: &[u32],
     codec: CodecConfig<'_>,
+    clap: Option<&ClapBox>,
     is_alpha: bool,
     presented: Presentation,
 ) -> usize {
@@ -625,8 +653,12 @@ fn write_track(
         // a debug-build panic / release-build wrap when width or height >= 65536;
         // saturate to u32::MAX so very large dimensions still produce a well-formed
         // box (the integer part is clamped to 0xFFFF, which is the spec maximum).
-        write_u32(out, fixed_16_16_saturating(width));
-        write_u32(out, fixed_16_16_saturating(height));
+        // The DISPLAYED size, which is not the coded size when the frames
+        // were padded to reach one coding tree unit. A player reads its
+        // dimensions here, so stating the padded size shows the padding.
+        let (display_width, display_height) = display_size(width, height, clap);
+        write_u32(out, fixed_16_16_saturating(display_width));
+        write_u32(out, fixed_16_16_saturating(display_height));
         end_box(out, pos);
     }
 
@@ -737,6 +769,12 @@ fn write_track(
                     out.extend_from_slice(&0xFFFFu16.to_be_bytes()); // pre_defined = -1
 
                     codec.write_box(out);
+
+                    // clap, when the coded frame is larger than the picture.
+                    if let Some(clap) = clap {
+                        let mut writer = Writer::new(out);
+                        let _ = clap.write(&mut writer);
+                    }
 
                     // ccst — MIAF requires the coding constraints of an image
                     // sequence to be stated in its sample entry, and both
@@ -875,6 +913,27 @@ fn write_av1c_box(out: &mut Vec<u8>, av1c: &Av1CBox, seq_header: &[u8]) {
     out.push(0x00); // no initial_presentation_delay
     out.extend_from_slice(seq_header);
     end_box(out, pos);
+}
+
+/// The size to show, given the coded size and any clean aperture.
+///
+/// The aperture's width and height are rationals, and a crop that is not a
+/// whole number of pixels is not something a track header can state, so it
+/// rounds down to the pixels wholly inside.
+fn display_size(width: u32, height: u32, clap: Option<&ClapBox>) -> (u32, u32) {
+    let Some(clap) = clap else {
+        return (width, height);
+    };
+    let resolve = |n: u32, d: u32, coded: u32| -> u32 {
+        if d == 0 {
+            return coded;
+        }
+        (n / d).clamp(1, coded)
+    };
+    (
+        resolve(clap.width_n, clap.width_d, width),
+        resolve(clap.height_n, clap.height_d, height),
+    )
 }
 
 fn bit_depth_from_av1c(av1c: &Av1CBox) -> u8 {
