@@ -142,11 +142,12 @@ impl AnimatedImage {
 
     /// Timescale in ticks per second. Default: 1000 (milliseconds).
     pub fn set_timescale(&mut self, timescale: u32) -> &mut Self { self.timescale = timescale; self }
-    /// Loop count: 0 = infinite. Default: 0.
-    /// Whether the sequence repeats: zero means forever, anything else once.
+    /// How many times the sequence plays. Zero means forever. Default: 0.
     ///
-    /// Not a number of plays. The edit list carries a repeat flag and nothing
-    /// finer, so a caller wanting a specific count must repeat the frames.
+    /// ISO 23008-12 §9.6.1 counts plays as the track's duration divided by the
+    /// edit list's segment, so a finite count is written by stating a track
+    /// duration that many times the media's, and forever by leaving the track
+    /// duration indefinite. Both libheif and libavif read it that way.
     pub fn set_loop_count(&mut self, loop_count: u32) -> &mut Self { self.loop_count = loop_count; self }
     /// AV1 codec configuration for the color track.
     pub fn set_color_config(&mut self, config: Av1CBox) -> &mut Self { self.color_config = config; self }
@@ -225,15 +226,19 @@ impl AnimatedImage {
     );
 
     // moov — each write_track returns the byte position of its stco placeholder.
-    let repeat = self.loop_count == 0;
+    //
+    // The presented duration is what says how often the sequence plays: a
+    // reader divides it by the edit list's segment. One play needs no edit
+    // list at all, which is also what libheif writes for that case.
+    let presented = Presentation::of(self.loop_count, total_duration);
     let moov_pos = begin_box(&mut out, b"moov");
-    write_mvhd(&mut out, self.timescale, total_duration, next_track_id, repeat);
+    write_mvhd(&mut out, self.timescale, total_duration, next_track_id, presented);
     let color_stco_pos = write_track(
         &mut out, 1, width, height,
         self.timescale, total_duration,
         &color_frames, &durations, &sync_indices,
         color_codec,
-        false, repeat,
+        false, presented,
     );
     let alpha_stco_pos = if has_alpha {
         Some(write_track(
@@ -241,7 +246,7 @@ impl AnimatedImage {
             self.timescale, total_duration,
             &alpha_frames, &durations, &sync_indices,
             alpha_codec.expect("has_alpha implies an alpha configuration"),
-            true, repeat,
+            true, presented,
         ))
     } else {
         None
@@ -509,13 +514,59 @@ fn write_meta(
 /// finite duration and comes out as exactly one play.
 const INDEFINITE_DURATION: u64 = u64::MAX;
 
-fn write_mvhd(out: &mut Vec<u8>, timescale: u32, duration: u64, next_track_id: u32, repeat: bool) {
+/// How long the sequence is presented for, which is how often it plays.
+#[derive(Clone, Copy)]
+enum Presentation {
+    /// One play. No edit list; the track lasts exactly as long as its media.
+    Once,
+    /// `n` plays, stated as a track duration `n` times the media's.
+    Repeats(u64),
+    /// Forever, stated by leaving the duration indefinite.
+    Forever,
+}
+
+impl Presentation {
+    fn of(loop_count: u32, media_duration: u64) -> Self {
+        match loop_count {
+            0 => Self::Forever,
+            1 => Self::Once,
+            n => match media_duration.checked_mul(u64::from(n)) {
+                // A count so large the duration overflows is indistinguishable
+                // from forever at any rate a reader would play it.
+                Some(total) => Self::Repeats(total),
+                None => Self::Forever,
+            },
+        }
+    }
+
+    /// Whether an edit list is written at all.
+    const fn repeats(self) -> bool {
+        !matches!(self, Self::Once)
+    }
+
+    /// The duration to state for the movie and the track.
+    const fn duration(self, media_duration: u64) -> u64 {
+        match self {
+            Self::Once => media_duration,
+            Self::Repeats(total) => total,
+            Self::Forever => INDEFINITE_DURATION,
+        }
+    }
+}
+
+fn write_mvhd(
+    out: &mut Vec<u8>,
+    timescale: u32,
+    duration: u64,
+    next_track_id: u32,
+    presented: Presentation,
+) {
     let pos = begin_box(out, b"mvhd");
     write_fullbox(out, 1, 0);
     write_u64(out, 0); // creation_time
     write_u64(out, 0); // modification_time
     write_u32(out, timescale);
-    write_u64(out, if repeat { INDEFINITE_DURATION } else { duration });
+    write_u64(out, presented.duration(duration));
     write_u32(out, 0x0001_0000); // rate 1.0
     write_u16(out, 0x0100); // volume 1.0
     out.extend_from_slice(&[0u8; 10]); // reserved
@@ -541,7 +592,7 @@ fn write_track(
     sync_indices: &[u32],
     codec: CodecConfig<'_>,
     is_alpha: bool,
-    repeat: bool,
+    presented: Presentation,
 ) -> usize {
     // Records the byte position of the stco chunk_offset placeholder.
     let stco_offset_pos: usize;
@@ -556,12 +607,12 @@ fn write_track(
         write_u64(out, 0); // modification_time
         write_u32(out, track_id);
         write_u32(out, 0); // reserved
-        // The TRACK duration is the one libavif divides the edit list's
-        // segment into to get a repetition count, so a repeating track states
-        // that it does not end. The media duration in `mdhd` stays finite —
-        // the samples really are that long, and libheif checks the edit list's
-        // segment against it before believing the repeat at all.
-        write_u64(out, if repeat { INDEFINITE_DURATION } else { duration });
+        // The TRACK duration is the one a reader divides the edit list's
+        // segment into to get the number of plays, so it states the whole
+        // presentation rather than the media. The media duration in `mdhd`
+        // stays finite — the samples really are that long, and libheif checks
+        // the edit list's segment against it before believing the repeat.
+        write_u64(out, presented.duration(duration));
         out.extend_from_slice(&[0u8; 8]); // reserved
         write_u16(out, 0); // layer
         write_u16(out, 0); // alternate_group
@@ -579,13 +630,13 @@ fn write_track(
         end_box(out, pos);
     }
 
-    // edts/elst, carrying whether the track repeats.
+    // edts/elst, one segment covering the media exactly once.
     //
-    // ISO 14496-12 gives the edit list a flags field, and bit 0 is the repeat
-    // flag readers use to tell a looping track from one that plays once.
-    // There is no place here for a number of plays: the box says forever or
-    // it says nothing, so a caller wanting three plays counts them itself.
-    if repeat {
+    // ISO 14496-12 gives the edit list a flags field whose bit 0 says the
+    // segment repeats. How often is not in this box: a reader divides the
+    // track's duration, written above, by this segment's. So the segment is
+    // always one pass over the media and the count lives in the duration.
+    if presented.repeats() {
         let edts_pos = begin_box(out, b"edts");
         {
             let pos = begin_box(out, b"elst");
@@ -1253,6 +1304,26 @@ mod tests {
         );
         assert_eq!(duration_of(&once, b"mvhd", 8 + 8 + 4), 80);
         assert_eq!(duration_of(&once, b"tkhd", 8 + 8 + 4 + 4), 80);
+
+        // A finite count is not "forever or once": the reader divides the
+        // track's duration by the edit segment's, so three plays is three
+        // times the media. This was written as one play until libheif read a
+        // file back and reported one where three had been asked for.
+        image.set_loop_count(3);
+        let thrice = image.serialize(16, 16, &frames, b"seq", None);
+        assert!(thrice.windows(4).any(|w| w == b"elst"));
+        assert_eq!(duration_of(&thrice, b"mvhd", 8 + 8 + 4), 240);
+        assert_eq!(duration_of(&thrice, b"tkhd", 8 + 8 + 4 + 4), 240);
+        // The media is still exactly as long as its samples, and the edit
+        // segment covers it once — libheif checks that before believing any
+        // of the above.
+        assert_eq!(duration_of(&thrice, b"mdhd", 8 + 8 + 4), 80);
+        let elst = thrice
+            .windows(4)
+            .position(|w| w == b"elst")
+            .expect("an edit list");
+        let segment = u32::from_be_bytes(thrice[elst + 12..elst + 16].try_into().unwrap());
+        assert_eq!(segment, 80, "the segment is one pass over the media");
     }
 
     #[test]
