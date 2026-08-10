@@ -82,6 +82,19 @@ enum CodecConfig<'a> {
 }
 
 impl CodecConfig<'_> {
+    /// The URN naming an alpha auxiliary track for this codec.
+    ///
+    /// A reader identifies an alpha track by this string, not by the `auxv`
+    /// handler alone — libheif and libavif both key on it, and a track without
+    /// one is reported as a second picture track rather than as transparency.
+    /// HEVC has its own; AV1 uses MIAF's.
+    fn alpha_aux_urn(&self) -> &'static str {
+        match self {
+            Self::Av1 { .. } => "urn:mpeg:mpegB:cicp:systems:auxiliary:alpha",
+            Self::Hevc { .. } => "urn:mpeg:hevc:2015:auxid:1",
+        }
+    }
+
     /// The `stsd` sample entry type, which is also the still item's type.
     fn entry_type(&self) -> &'static [u8; 4] {
         match self {
@@ -715,6 +728,7 @@ fn write_track(
             end_box(out, pos);
         }
 
+
         // minf
         {
             let minf_pos = begin_box(out, b"minf");
@@ -769,6 +783,18 @@ fn write_track(
                     out.extend_from_slice(&0xFFFFu16.to_be_bytes()); // pre_defined = -1
 
                     codec.write_box(out);
+
+                    // auxi, naming what an auxiliary track carries. It lives
+                    // in the sample entry, which is where libheif looks — a
+                    // reader that does not find it sees a second picture
+                    // track and shows it as one, rather than as transparency.
+                    if is_alpha {
+                        let pos = begin_box(out, b"auxi");
+                        write_fullbox(out, 0, 0);
+                        out.extend_from_slice(codec.alpha_aux_urn().as_bytes());
+                        out.push(0);
+                        end_box(out, pos);
+                    }
 
                     // clap, when the coded frame is larger than the picture.
                     if let Some(clap) = clap {
