@@ -799,7 +799,14 @@ impl Aviffy {
         if let Some(ref icc_data) = self.icc_profile {
             let p = push_prop(ipco, IpcoProp::ColrIcc(ColrIccBox { icc_data: icc_data.clone() }))?;
             ipma.prop_ids.push(p);
-        } else if self.colr != ColrBox::default() {
+        } else {
+            // Written whether or not it matches the default. Skipping it when
+            // it does produced an sRGB file that stated no colour at all, and
+            // left a caller who had asked for sRGB unable to tell that from a
+            // file which simply never said. Readers assume sRGB either way, so
+            // the pixels were never wrong — but libheif and libavif both write
+            // this unconditionally, and nineteen bytes is a poor reason to be
+            // the odd one out.
             let p = push_prop(ipco, IpcoProp::Colr(self.colr))?;
             ipma.prop_ids.push(p);
         }
