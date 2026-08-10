@@ -838,13 +838,13 @@ impl Aviffy {
                 item_id: color_image_id,
                 prop_ids: from_array([ispe_prop, hvcc_prop | ESSENTIAL_BIT, pixi_color]),
             };
+            // Both, for the reason the AV1 path above gives.
             if let Some(ref icc_data) = self.icc_profile {
                 let p = push_prop(ipco, IpcoProp::ColrIcc(ColrIccBox { icc_data: icc_data.clone() }))?;
                 ipma.prop_ids.push(p);
-            } else {
-                let p = push_prop(ipco, IpcoProp::Colr(self.colr))?;
-                ipma.prop_ids.push(p);
             }
+            let p = push_prop(ipco, IpcoProp::Colr(self.colr))?;
+            ipma.prop_ids.push(p);
             for prop in [
                 self.clli.map(IpcoProp::Clli),
                 self.mdcv.map(IpcoProp::Mdcv),
@@ -886,21 +886,25 @@ impl Aviffy {
             prop_ids: from_array([ispe_prop, av1c_color_prop | ESSENTIAL_BIT, pixi_color]),
         };
 
-        // ICC profile takes precedence over nclx if both are set.
+        // Both, when both are known. ISO 23008-12 lets an item carry one
+        // `colr` of each type, and a reader that honours ICC uses that while
+        // one that does not still learns the code points. Treating them as
+        // alternatives loses whichever the reader cannot use: an ICC-bearing
+        // file said nothing about its primaries or range, so anything reading
+        // CICP fell back to defaults. libheif and libavif both write the pair.
         if let Some(ref icc_data) = self.icc_profile {
             let p = push_prop(ipco, IpcoProp::ColrIcc(ColrIccBox { icc_data: icc_data.clone() }))?;
             ipma.prop_ids.push(p);
-        } else {
-            // Written whether or not it matches the default. Skipping it when
-            // it does produced an sRGB file that stated no colour at all, and
-            // left a caller who had asked for sRGB unable to tell that from a
-            // file which simply never said. Readers assume sRGB either way, so
-            // the pixels were never wrong — but libheif and libavif both write
-            // this unconditionally, and nineteen bytes is a poor reason to be
-            // the odd one out.
-            let p = push_prop(ipco, IpcoProp::Colr(self.colr))?;
-            ipma.prop_ids.push(p);
         }
+        // Written whether or not it matches the default. Skipping it when
+        // it does produced an sRGB file that stated no colour at all, and
+        // left a caller who had asked for sRGB unable to tell that from a
+        // file which simply never said. Readers assume sRGB either way, so
+        // the pixels were never wrong — but libheif and libavif both write
+        // this unconditionally, and nineteen bytes is a poor reason to be
+        // the odd one out.
+        let p = push_prop(ipco, IpcoProp::Colr(self.colr))?;
+        ipma.prop_ids.push(p);
         if let Some(clli) = self.clli {
             ipma.prop_ids.push(push_prop(ipco, IpcoProp::Clli(clli))?);
         }
@@ -979,10 +983,20 @@ impl Aviffy {
             urn: "urn:mpeg:mpegB:cicp:systems:auxiliary:alpha",
         }))?;
 
-        ipma_entries.push(IpmaEntry {
+        let mut alpha_ipma = IpmaEntry {
             item_id: alpha_image_id,
             prop_ids: from_array([ispe_prop, alpha_codec_prop | ESSENTIAL_BIT, auxc_prop, pixi_1]),
-        });
+        };
+        // The same crop the colour item carries. The mask covers the same
+        // coded frame and was padded with it, so cropping one and not the
+        // other lands transparency on the wrong pixels — a shifted alpha
+        // channel over a correctly cropped picture.
+        if let Some(clap) = self.clap {
+            alpha_ipma
+                .prop_ids
+                .push(push_prop(ipco, IpcoProp::Clap(clap))? | ESSENTIAL_BIT);
+        }
+        ipma_entries.push(alpha_ipma);
 
         // Alpha-first iloc order lets a partial decode show alpha before color.
         iloc_items.push(IlocItem {
