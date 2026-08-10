@@ -227,7 +227,7 @@ impl AnimatedImage {
     // moov — each write_track returns the byte position of its stco placeholder.
     let repeat = self.loop_count == 0;
     let moov_pos = begin_box(&mut out, b"moov");
-    write_mvhd(&mut out, self.timescale, total_duration, next_track_id);
+    write_mvhd(&mut out, self.timescale, total_duration, next_track_id, repeat);
     let color_stco_pos = write_track(
         &mut out, 1, width, height,
         self.timescale, total_duration,
@@ -502,13 +502,20 @@ fn write_meta(
     iloc_offset_pos
 }
 
-fn write_mvhd(out: &mut Vec<u8>, timescale: u32, duration: u64, next_track_id: u32) {
+/// All-ones, which ISO 14496-12 reserves to mean a duration that is not known
+/// in advance. Combined with an edit list that repeats, ISO 23008-12 §9.6.1
+/// makes it the way a sequence says it plays forever, and it is what both
+/// libheif and libavif read: the repeat flag alone gets counted against a
+/// finite duration and comes out as exactly one play.
+const INDEFINITE_DURATION: u64 = u64::MAX;
+
+fn write_mvhd(out: &mut Vec<u8>, timescale: u32, duration: u64, next_track_id: u32, repeat: bool) {
     let pos = begin_box(out, b"mvhd");
     write_fullbox(out, 1, 0);
     write_u64(out, 0); // creation_time
     write_u64(out, 0); // modification_time
     write_u32(out, timescale);
-    write_u64(out, duration);
+    write_u64(out, if repeat { INDEFINITE_DURATION } else { duration });
     write_u32(out, 0x0001_0000); // rate 1.0
     write_u16(out, 0x0100); // volume 1.0
     out.extend_from_slice(&[0u8; 10]); // reserved
@@ -549,7 +556,12 @@ fn write_track(
         write_u64(out, 0); // modification_time
         write_u32(out, track_id);
         write_u32(out, 0); // reserved
-        write_u64(out, duration);
+        // The TRACK duration is the one libavif divides the edit list's
+        // segment into to get a repetition count, so a repeating track states
+        // that it does not end. The media duration in `mdhd` stays finite —
+        // the samples really are that long, and libheif checks the edit list's
+        // segment against it before believing the repeat at all.
+        write_u64(out, if repeat { INDEFINITE_DURATION } else { duration });
         out.extend_from_slice(&[0u8; 8]); // reserved
         write_u16(out, 0); // layer
         write_u16(out, 0); // alternate_group
@@ -1188,6 +1200,59 @@ mod tests {
         let info = parser.animation_info().expect("animation info");
         assert!(!info.has_alpha);
         assert!(!heic.windows(2).any(|w| w == b"a1"), "alpha data was written anyway");
+    }
+
+    /// The duration field of the first box of a given type, as a u64.
+    fn duration_of(file: &[u8], fourcc: &[u8; 4], version_1_offset: usize) -> u64 {
+        let at = file
+            .windows(4)
+            .position(|w| w == fourcc)
+            .unwrap_or_else(|| panic!("no {} box", std::str::from_utf8(fourcc).unwrap()));
+        let payload = at + 4 + 4; // past the fourcc and the version/flags word
+        let start = payload + version_1_offset;
+        u64::from_be_bytes(file[start..start + 8].try_into().unwrap())
+    }
+
+    /// Loop-forever is signalled by an indefinite duration, not by the edit
+    /// list's flag alone.
+    ///
+    /// The flag on its own reads as one play: libheif divides the movie
+    /// duration by the track's, and libavif divides the track duration by the
+    /// edit segment's, and with everything finite and equal both come out at
+    /// one. Files written before this was measured said "repeat" and were
+    /// played once by both.
+    #[test]
+    fn repeating_forever_leaves_the_duration_indefinite() {
+        let frames = [
+            AnimFrame::new(b"f1", 40).with_sync(true),
+            AnimFrame::new(b"f2", 40),
+        ];
+        let mut image = AnimatedImage::new();
+        image.set_color_config(basic_av1c());
+
+        image.set_loop_count(0); // forever
+        let forever = image.serialize(16, 16, &frames, b"seq", None);
+        assert!(
+            forever.windows(4).any(|w| w == b"elst"),
+            "a repeating track needs an edit list"
+        );
+        // mvhd is version 1: creation and modification are 8 bytes each, then
+        // a 4-byte timescale, then the duration.
+        assert_eq!(duration_of(&forever, b"mvhd", 8 + 8 + 4), u64::MAX);
+        // tkhd is version 1: creation, modification, a 4-byte track id and a
+        // 4-byte reserved word come before the duration.
+        assert_eq!(duration_of(&forever, b"tkhd", 8 + 8 + 4 + 4), u64::MAX);
+        // The media itself is still exactly as long as its samples.
+        assert_eq!(duration_of(&forever, b"mdhd", 8 + 8 + 4), 80);
+
+        image.set_loop_count(1); // once
+        let once = image.serialize(16, 16, &frames, b"seq", None);
+        assert!(
+            !once.windows(4).any(|w| w == b"elst"),
+            "no edit list means play once, which is what libheif writes"
+        );
+        assert_eq!(duration_of(&once, b"mvhd", 8 + 8 + 4), 80);
+        assert_eq!(duration_of(&once, b"tkhd", 8 + 8 + 4 + 4), 80);
     }
 
     #[test]
