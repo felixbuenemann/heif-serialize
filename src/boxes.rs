@@ -322,6 +322,7 @@ impl MpegBox for IprpBox {
 #[non_exhaustive]
 pub enum IpcoProp {
     Av1C(Av1CBox),
+    HvcC(HvcCBox),
     Pixi(PixiBox),
     Ispe(IspeBox),
     AuxC(AuxCBox),
@@ -339,6 +340,7 @@ impl IpcoProp {
     pub fn len(&self) -> usize {
         match self {
             Self::Av1C(p) => p.len(),
+            Self::HvcC(p) => p.len(),
             Self::Pixi(p) => p.len(),
             Self::Ispe(p) => p.len(),
             Self::AuxC(p) => p.len(),
@@ -356,6 +358,7 @@ impl IpcoProp {
     pub fn write<B: WriterBackend>(&self, w: &mut Writer<B>) -> Result<(), B::Error> {
         match self {
             Self::Av1C(p) => p.write(w),
+            Self::HvcC(p) => p.write(w),
             Self::Pixi(p) => p.write(w),
             Self::Ispe(p) => p.write(w),
             Self::AuxC(p) => p.write(w),

@@ -222,6 +222,11 @@ pub struct Aviffy {
     pasp: Option<PaspBox>,
     icc_profile: Option<Vec<u8>>,
     min_seq_profile: u8,
+    /// When set, the primary item is HEVC-coded rather than AV1: written as
+    /// an `hvc1` item carrying this `hvcC`, under HEIC brands. Alpha and gain
+    /// maps stay AV1-only for now — they have their own item types and
+    /// configurations, and nothing yet asks for them alongside HEVC.
+    hevc_config: Option<HvcCBox>,
     chroma_subsampling: ChromaSubsampling,
     monochrome: bool,
     width: u32,
@@ -301,6 +306,7 @@ impl Aviffy {
         Self {
             premultiplied_alpha: false,
             min_seq_profile: 1,
+            hevc_config: None,
             chroma_subsampling: ChromaSubsampling::NONE,
             monochrome: false,
             width: 0,
@@ -654,7 +660,7 @@ impl Aviffy {
 
         image_items.push(InfeBox {
             id: color_image_id,
-            typ: FourCC(*b"av01"),
+            typ: if self.hevc_config.is_some() { FourCC(*b"hvc1") } else { FourCC(*b"av01") },
             name: "",
             content_type: "",
         });
@@ -724,7 +730,13 @@ impl Aviffy {
         });
         Ok(AvifFile {
             ftyp: FtypBox {
-                major_brand: FourCC(*b"avif"),
+                // A HEVC-coded file is a HEIC and must say so: readers pick
+                // their decoder from the brand before looking at any item.
+                major_brand: if self.hevc_config.is_some() {
+                    FourCC(*b"heic")
+                } else {
+                    FourCC(*b"avif")
+                },
                 minor_version: 0,
                 compatible_brands,
             },
@@ -772,6 +784,47 @@ impl Aviffy {
         } else {
             (self.chroma_subsampling.horizontal, self.chroma_subsampling.vertical)
         };
+        // A HEVC item carries hvcC where an AV1 one carries av1C. Both are
+        // essential: a reader that cannot interpret the codec configuration
+        // cannot interpret the item.
+        if let Some(ref hevc) = self.hevc_config {
+            let hvcc_prop = push_prop(ipco, IpcoProp::HvcC(hevc.clone()))?;
+            let pixi_color = push_prop(
+                ipco,
+                IpcoProp::Pixi(PixiBox {
+                    channels: if hevc.chroma_format_idc == 0 { 1 } else { 3 },
+                    depth: hevc.bit_depth_luma,
+                }),
+            )?;
+            let mut ipma = IpmaEntry {
+                item_id: color_image_id,
+                prop_ids: from_array([ispe_prop, hvcc_prop | ESSENTIAL_BIT, pixi_color]),
+            };
+            if let Some(ref icc_data) = self.icc_profile {
+                let p = push_prop(ipco, IpcoProp::ColrIcc(ColrIccBox { icc_data: icc_data.clone() }))?;
+                ipma.prop_ids.push(p);
+            } else {
+                let p = push_prop(ipco, IpcoProp::Colr(self.colr))?;
+                ipma.prop_ids.push(p);
+            }
+            for prop in [
+                self.clli.map(IpcoProp::Clli),
+                self.mdcv.map(IpcoProp::Mdcv),
+                self.irot.map(IpcoProp::Irot),
+                self.imir.map(IpcoProp::Imir),
+                self.clap.map(IpcoProp::Clap),
+                self.pasp.map(IpcoProp::Pasp),
+            ]
+            .into_iter()
+            .flatten()
+            {
+                let essential = matches!(prop, IpcoProp::Irot(_) | IpcoProp::Imir(_) | IpcoProp::Clap(_));
+                let p = push_prop(ipco, prop)?;
+                ipma.prop_ids.push(if essential { p | ESSENTIAL_BIT } else { p });
+            }
+            return Ok(ipma);
+        }
+
         let av1c_color_prop = push_prop(ipco, IpcoProp::Av1C(Av1CBox {
             seq_profile,
             seq_level_idx_0: 31,
@@ -948,6 +1001,17 @@ impl Aviffy {
     ///
     /// Higher bit depth may increase this
     #[inline]
+    /// Code the primary item with HEVC instead of AV1.
+    ///
+    /// The payload handed to the write call must then be an HEVC item payload
+    /// — length-prefixed NAL units, prefix width as this record declares —
+    /// rather than an AV1 bitstream.
+    #[inline]
+    pub fn set_hevc_config(&mut self, config: HvcCBox) -> &mut Self {
+        self.hevc_config = Some(config);
+        self
+    }
+
     pub fn set_seq_profile(&mut self, seq_profile: u8) -> &mut Self {
         self.min_seq_profile = seq_profile;
         self
