@@ -73,6 +73,10 @@ impl AnimatedImage {
     /// Timescale in ticks per second. Default: 1000 (milliseconds).
     pub fn set_timescale(&mut self, timescale: u32) -> &mut Self { self.timescale = timescale; self }
     /// Loop count: 0 = infinite. Default: 0.
+    /// Whether the sequence repeats: zero means forever, anything else once.
+    ///
+    /// Not a number of plays. The edit list carries a repeat flag and nothing
+    /// finer, so a caller wanting a specific count must repeat the frames.
     pub fn set_loop_count(&mut self, loop_count: u32) -> &mut Self { self.loop_count = loop_count; self }
     /// AV1 codec configuration for the color track.
     pub fn set_color_config(&mut self, config: Av1CBox) -> &mut Self { self.color_config = config; self }
@@ -134,7 +138,7 @@ impl AnimatedImage {
         self.timescale, total_duration,
         &color_frames, &durations, &sync_indices,
         color_seq_header, &self.color_config,
-        false,
+        false, self.loop_count == 0,
     );
     let alpha_stco_pos = if has_alpha {
         let alpha_seq = alpha_seq_header.unwrap();
@@ -144,7 +148,7 @@ impl AnimatedImage {
             self.timescale, total_duration,
             &alpha_frames, &durations, &sync_indices,
             alpha_seq, alpha_cfg,
-            true,
+            true, self.loop_count == 0,
         ))
     } else {
         None
@@ -426,6 +430,7 @@ fn write_track(
     seq_header: &[u8],
     av1c: &Av1CBox,
     is_alpha: bool,
+    repeat: bool,
 ) -> usize {
     // Records the byte position of the stco chunk_offset placeholder.
     let stco_offset_pos: usize;
@@ -456,6 +461,27 @@ fn write_track(
         write_u32(out, fixed_16_16_saturating(width));
         write_u32(out, fixed_16_16_saturating(height));
         end_box(out, pos);
+    }
+
+    // edts/elst, carrying whether the track repeats.
+    //
+    // ISO 14496-12 gives the edit list a flags field, and bit 0 is the repeat
+    // flag readers use to tell a looping track from one that plays once.
+    // There is no place here for a number of plays: the box says forever or
+    // it says nothing, so a caller wanting three plays counts them itself.
+    if repeat {
+        let edts_pos = begin_box(out, b"edts");
+        {
+            let pos = begin_box(out, b"elst");
+            write_fullbox(out, 0, 1); // version 0, flags bit 0 = repeat
+            write_u32(out, 1); // entry_count
+            write_u32(out, duration as u32); // segment_duration
+            write_u32(out, 0); // media_time, from the start
+            write_u16(out, 1); // media_rate_integer
+            write_u16(out, 0); // media_rate_fraction
+            end_box(out, pos);
+        }
+        end_box(out, edts_pos);
     }
 
     // mdia
