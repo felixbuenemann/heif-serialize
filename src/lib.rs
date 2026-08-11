@@ -586,11 +586,6 @@ impl Aviffy {
         self
     }
 
-    /// Set whether the gain map image is monochrome.
-    ///
-    /// Defaults to false. Only meaningful if
-    /// [`set_gain_map`](Self::set_gain_map) has been called.
-    #[inline]
     /// Code the alpha auxiliary item with HEVC instead of AV1.
     ///
     /// The alpha payload must then be an HEVC item payload rather than an AV1
@@ -614,6 +609,11 @@ impl Aviffy {
         self
     }
 
+    /// Set whether the gain map image is monochrome.
+    ///
+    /// Defaults to false. Only meaningful if
+    /// [`set_gain_map`](Self::set_gain_map) has been called.
+    #[inline]
     pub fn set_gain_map_monochrome(&mut self, monochrome: bool) -> &mut Self {
         if let Some(ref mut gm) = self.gain_map {
             gm.monochrome = monochrome;
@@ -1057,10 +1057,6 @@ impl Aviffy {
         self
     }
 
-    /// Sets minimum required
-    ///
-    /// Higher bit depth may increase this
-    #[inline]
     /// Code the primary item with HEVC instead of AV1.
     ///
     /// The payload handed to the write call must then be an HEVC item payload
@@ -1072,6 +1068,10 @@ impl Aviffy {
         self
     }
 
+    /// Sets minimum required
+    ///
+    /// Higher bit depth may increase this
+    #[inline]
     pub fn set_seq_profile(&mut self, seq_profile: u8) -> &mut Self {
         self.min_seq_profile = seq_profile;
         self
