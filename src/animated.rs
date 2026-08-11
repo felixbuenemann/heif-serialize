@@ -57,6 +57,7 @@ pub struct AnimatedImage {
     hevc_config: Option<HvcCBox>,
     alpha_hevc_config: Option<HvcCBox>,
     colr: Option<ColrBox>,
+    icc: Option<Vec<u8>>,
     clli: Option<ClliBox>,
     mdcv: Option<MdcvBox>,
     clap: Option<ClapBox>,
@@ -149,6 +150,7 @@ impl AnimatedImage {
             hevc_config: None,
             alpha_hevc_config: None,
             colr: None,
+            icc: None,
             clli: None,
             mdcv: None,
             clap: None,
@@ -181,6 +183,13 @@ impl AnimatedImage {
     pub fn set_alpha_hevc_config(&mut self, config: HvcCBox) -> &mut Self { self.alpha_hevc_config = Some(config); self }
     /// CICP color info (nclx).
     pub fn set_colr(&mut self, colr: ColrBox) -> &mut Self { self.colr = Some(colr); self }
+
+    /// Attach an ICC profile.
+    ///
+    /// Written beside the code points rather than instead of them: the two
+    /// describe the same image to readers that differ in what they can act
+    /// on, and MIAF allows both.
+    pub fn set_icc_profile(&mut self, icc: Vec<u8>) -> &mut Self { self.icc = Some(icc); self }
     /// Content Light Level Information (HDR).
     pub fn set_clli(&mut self, clli: ClliBox) -> &mut Self { self.clli = Some(clli); self }
     /// Mastering Display Colour Volume (HDR).
@@ -245,6 +254,7 @@ impl AnimatedImage {
         color_codec,
         color_frames.first().map(|f| f.len() as u32).unwrap_or(0),
         self.colr.as_ref(),
+        self.icc.as_deref(),
         self.clli.as_ref(),
         self.mdcv.as_ref(),
         self.clap.as_ref(),
@@ -262,7 +272,8 @@ impl AnimatedImage {
         &mut out, 1, width, height,
         self.timescale, total_duration,
         &color_frames, &durations, &sync_indices,
-        color_codec, self.colr.as_ref(), self.clap.as_ref(),
+        color_codec, self.colr.as_ref(), self.icc.as_deref(),
+        self.clli.as_ref(), self.mdcv.as_ref(), self.clap.as_ref(),
         false, presented,
     );
     let alpha_stco_pos = if has_alpha {
@@ -271,7 +282,7 @@ impl AnimatedImage {
             self.timescale, total_duration,
             &alpha_frames, &durations, &sync_indices,
             alpha_codec.expect("has_alpha implies an alpha configuration"),
-            None,
+            None, None, None, None,
             self.clap.as_ref(),
             true, presented,
         ))
@@ -384,6 +395,7 @@ fn write_meta(
     codec: CodecConfig<'_>,
     first_frame_len: u32,
     colr: Option<&ColrBox>,
+    icc: Option<&[u8]>,
     clli: Option<&ClliBox>,
     mdcv: Option<&MdcvBox>,
     clap: Option<&ClapBox>,
@@ -483,17 +495,25 @@ fn write_meta(
                     write_colr_nclx(out, colr);
                 }
 
-            // Property 5: clli (optional)
+            // Property 5: colr holding an ICC profile (optional). A second
+            // colr, not a replacement for the first: a reader that applies
+            // profiles uses this and one that reads code points uses the
+            // other, and MIAF allows an item to state both.
+            if let Some(icc) = icc {
+                write_colr_icc(out, icc);
+            }
+
+            // Property 6: clli (optional)
             if let Some(clli) = clli {
                 write_clli(out, clli);
             }
 
-            // Property 6: mdcv (optional)
+            // Property 7: mdcv (optional)
             if let Some(mdcv) = mdcv {
                 write_mdcv(out, mdcv);
             }
 
-            // Property 7: clap (optional). The still item is coded at the
+            // Property 8: clap (optional). The still item is coded at the
             // padded size like every frame, so it needs the same crop.
             if let Some(clap) = clap {
                 let mut writer = Writer::new(out);
@@ -513,6 +533,7 @@ fn write_meta(
             let mut assoc_count: u8 = 3;
             let has_colr = colr.is_some_and(|c| *c != ColrBox::default());
             if has_colr { assoc_count += 1; }
+            if icc.is_some() { assoc_count += 1; }
             if clli.is_some() { assoc_count += 1; }
             if mdcv.is_some() { assoc_count += 1; }
             if clap.is_some() { assoc_count += 1; }
@@ -522,6 +543,10 @@ fn write_meta(
             out.push(0x03); // property 3 (pixi), not essential
             let mut next_prop = 4u8;
             if has_colr {
+                out.push(next_prop);
+                next_prop += 1;
+            }
+            if icc.is_some() {
                 out.push(next_prop);
                 next_prop += 1;
             }
@@ -633,6 +658,9 @@ fn write_track(
     sync_indices: &[u32],
     codec: CodecConfig<'_>,
     colr: Option<&ColrBox>,
+    icc: Option<&[u8]>,
+    clli: Option<&ClliBox>,
+    mdcv: Option<&MdcvBox>,
     clap: Option<&ClapBox>,
     is_alpha: bool,
     presented: Presentation,
@@ -807,11 +835,26 @@ fn write_track(
                     // go on and falls back to a guess. Written for the colour
                     // track only; an auxiliary one carries alpha, which is not
                     // a colour and has no primaries to name.
-                    if !is_alpha
-                        && let Some(colr) = colr
-                        && *colr != ColrBox::default()
-                    {
-                        write_colr_nclx(out, colr);
+                    if !is_alpha {
+                        if let Some(colr) = colr
+                            && *colr != ColrBox::default()
+                        {
+                            write_colr_nclx(out, colr);
+                        }
+                        // The profile, on the same terms as the code points.
+                        if let Some(icc) = icc {
+                            write_colr_icc(out, icc);
+                        }
+                        // And the luminance the samples were graded for.
+                        // These are item properties in HEIF's still model and
+                        // sample entry boxes here; a track that omits them
+                        // leaves an HDR player to guess its peak.
+                        if let Some(clli) = clli {
+                            write_clli(out, clli);
+                        }
+                        if let Some(mdcv) = mdcv {
+                            write_mdcv(out, mdcv);
+                        }
                     }
 
                     // clap, when the coded frame is larger than the picture.
@@ -991,6 +1034,17 @@ fn write_colr_nclx(out: &mut Vec<u8>, colr: &ColrBox) {
     write_u16(out, colr.transfer_characteristics as u16);
     write_u16(out, colr.matrix_coefficients as u16);
     out.push(if colr.full_range_flag { 1 << 7 } else { 0 });
+    end_box(out, pos);
+}
+
+/// A `colr` carrying an ICC profile.
+///
+/// `prof` rather than `rICC`: the profile is unrestricted, and claiming the
+/// restricted form for one that is not would misdescribe it.
+fn write_colr_icc(out: &mut Vec<u8>, icc: &[u8]) {
+    let pos = begin_box(out, b"colr");
+    out.extend_from_slice(b"prof");
+    out.extend_from_slice(icc);
     end_box(out, pos);
 }
 
