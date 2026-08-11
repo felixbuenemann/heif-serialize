@@ -1151,8 +1151,8 @@ mod tests {
         assert!(avif.windows(b"frame1color".len()).any(|w| w == b"frame1color"));
         assert!(avif.windows(b"frame2color".len()).any(|w| w == b"frame2color"));
 
-        // Parse with zenavif-parse to verify structure
-        let parser = zenavif_parse::AvifParser::from_bytes(&avif).unwrap();
+        // Parse with heif-parse to verify structure
+        let parser = heif_parse::AvifParser::from_bytes(&avif).unwrap();
         let info = parser.animation_info().expect("should have animation info");
         assert_eq!(info.timescale, 1000);
         assert_eq!(info.frame_count, 2);
@@ -1175,7 +1175,7 @@ mod tests {
         assert!(avif.windows(2).any(|w| w == b"c2"));
         assert!(avif.windows(2).any(|w| w == b"a2"));
 
-        let parser = zenavif_parse::AvifParser::from_bytes(&avif).unwrap();
+        let parser = heif_parse::AvifParser::from_bytes(&avif).unwrap();
         let info = parser.animation_info().expect("should have animation info");
         assert_eq!(info.frame_count, 2);
     }
@@ -1230,7 +1230,7 @@ mod tests {
             "alpha2 corrupted by placeholder scan");
 
         // Parser still resolves animation structure correctly.
-        let parser = zenavif_parse::AvifParser::from_bytes(&avif).unwrap();
+        let parser = heif_parse::AvifParser::from_bytes(&avif).unwrap();
         let info = parser.animation_info().expect("animation info");
         assert_eq!(info.frame_count, 2);
     }
@@ -1258,14 +1258,14 @@ mod tests {
         // ceiling, and the point here is the writer's arithmetic rather than
         // whether anything would agree to decode a picture that size. Raise
         // the limit for the read-back so the structure is what is checked.
-        let config = zenavif_parse::DecodeConfig {
+        let config = heif_parse::DecodeConfig {
             total_megapixels_limit: None,
-            ..zenavif_parse::DecodeConfig::default()
+            ..heif_parse::DecodeConfig::default()
         };
-        let parser = zenavif_parse::AvifParser::from_bytes_with_config(
+        let parser = heif_parse::AvifParser::from_bytes_with_config(
             &avif,
             &config,
-            &zenavif_parse::Unstoppable,
+            &heif_parse::Unstoppable,
         )
         .unwrap();
         let info = parser.animation_info().expect("animation info");
@@ -1282,7 +1282,7 @@ mod tests {
         let mut image = AnimatedImage::new();
         image.set_color_config(basic_av1c());
         let avif = image.serialize(16, 16, &frames, b"seq", None);
-        let parser = zenavif_parse::AvifParser::from_bytes(&avif).unwrap();
+        let parser = heif_parse::AvifParser::from_bytes(&avif).unwrap();
         let info = parser.animation_info().expect("animation info");
         assert_eq!(info.frame_count, 3);
         assert_eq!(info.timescale, 1000);
@@ -1348,7 +1348,7 @@ mod tests {
             assert!(heic.windows(frame.color.len()).any(|w| w == frame.color));
         }
 
-        let parser = zenavif_parse::AvifParser::from_bytes(&heic).unwrap();
+        let parser = heif_parse::AvifParser::from_bytes(&heic).unwrap();
         let info = parser.animation_info().expect("animation info");
         assert_eq!(info.frame_count, 3);
         assert_eq!(info.timescale, 1000);
@@ -1387,7 +1387,7 @@ mod tests {
         image.set_alpha_hevc_config(alpha);
         let heic = image.serialize(32, 32, &frames, b"", None);
 
-        let parser = zenavif_parse::AvifParser::from_bytes(&heic).unwrap();
+        let parser = heif_parse::AvifParser::from_bytes(&heic).unwrap();
         let info = parser.animation_info().expect("animation info");
         assert_eq!(info.frame_count, 2);
         assert!(info.has_alpha, "the alpha track should be found");
@@ -1405,7 +1405,7 @@ mod tests {
         image.set_hevc_config(basic_hvcc());
         let heic = image.serialize(32, 32, &frames, b"", None);
 
-        let parser = zenavif_parse::AvifParser::from_bytes(&heic).unwrap();
+        let parser = heif_parse::AvifParser::from_bytes(&heic).unwrap();
         let info = parser.animation_info().expect("animation info");
         assert!(!info.has_alpha);
         assert!(!heic.windows(2).any(|w| w == b"a1"), "alpha data was written anyway");

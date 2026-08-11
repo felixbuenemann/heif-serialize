@@ -48,7 +48,7 @@ impl AvifFile<'_> {
             return Err(io::Error::new(io::ErrorKind::InvalidInput, "missing width/height"));
         }
 
-        // Structural 32-bit ceiling (zenavif-serialize#3): iloc extent
+        // Structural 32-bit ceiling (heif-serialize#3): iloc extent
         // offsets/lengths are serialized as u32 and box sizes use the plain
         // 32-bit form (no largesize). A file over u32::MAX bytes would
         // silently truncate `data.len() as u32` and wrap `next_start` in

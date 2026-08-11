@@ -1,6 +1,6 @@
 <!-- GENERATED FROM README.md by zenutils gen-readme-crates.sh — DO NOT EDIT. -->
 
-# zenavif-serialize
+# heif-serialize
 
 AVIF container serializer (muxer) in pure Rust. It wraps already-compressed AV1 bitstreams into MPEG/HEIF/MIAF/ISO-BMFF boxes for still images, animations, and grid layouts — it does **not** encode pixels itself. `#![forbid(unsafe_code)]`, and depends only on `arrayvec` and `whereat` (uses `std::io` for output).
 
@@ -10,14 +10,14 @@ Pair it with an AV1 encoder such as [zenrav1e](https://lib.rs/zenrav1e) for a pu
 
 ```toml
 [dependencies]
-zenavif-serialize = "0.1.4"
+heif-serialize = "0.1.4"
 ```
 
 Compress your pixels with an AV1 encoder first, then wrap the single-keyframe bitstream in one call:
 
 ```rust
 // `color_av1` is a raw AV1 OBU bitstream for ONE keyframe, sequence header in-band.
-let avif_bytes = zenavif_serialize::serialize_to_vec(
+let avif_bytes = heif_serialize::serialize_to_vec(
     &color_av1,       // AV1 bitstream
     None,             // alpha plane (optional; separately-encoded monochrome AV1)
     width, height, 8, // dimensions and bit depth (8, 10, or 12)
@@ -42,7 +42,7 @@ signaling, transforms, metadata, animation, and grids.
 ## Configuring color, transforms & metadata
 
 ```rust
-use zenavif_serialize::{Aviffy, constants::{ColorPrimaries, TransferCharacteristics}};
+use heif_serialize::{Aviffy, constants::{ColorPrimaries, TransferCharacteristics}};
 
 let avif_bytes = Aviffy::new()
     .set_color_primaries(ColorPrimaries::Bt2020)
@@ -141,7 +141,7 @@ pub fn serialize<W: std::io::Write>(
     width: u32,
     height: u32,
     depth_bits: u8,
-) -> zenavif_serialize::Result<()>; // = Result<(), whereat::At<SerializeError>>
+) -> heif_serialize::Result<()>; // = Result<(), whereat::At<SerializeError>>
 // `Aviffy::write` has the identical signature after configuration.
 ```
 
@@ -153,7 +153,7 @@ fails. On a request path with untrusted dimensions/depth, use the fallible
 ### Animation
 
 ```rust
-use zenavif_serialize::{Av1CBox, animated::{AnimatedImage, AnimFrame}};
+use heif_serialize::{Av1CBox, animated::{AnimatedImage, AnimFrame}};
 
 let mut anim = AnimatedImage::new();
 anim.set_timescale(1000);       // ticks per second; durations below are in ticks
@@ -172,7 +172,7 @@ let avif_bytes = anim.serialize(width, height, &frames, &seq_header, None);
 ### Grid (tiled)
 
 ```rust
-use zenavif_serialize::{Av1CBox, grid::GridImage};
+use heif_serialize::{Av1CBox, grid::GridImage};
 
 let mut grid = GridImage::new();
 grid.set_color_config(av1c);    // av1c: Av1CBox describing the tiles
@@ -188,7 +188,7 @@ let avif_bytes = grid.serialize(
 
 ## Compatibility
 
-Output is tested against three independent AVIF parsers: [avif-parse](https://lib.rs/avif-parse), [zenavif-parse](https://lib.rs/zenavif-parse), and [mp4parse](https://lib.rs/mp4parse) (Mozilla). Browser compatibility has not been independently verified.
+Output is tested against three independent AVIF parsers: [avif-parse](https://lib.rs/avif-parse), [heif-parse](https://lib.rs/heif-parse), and [mp4parse](https://lib.rs/mp4parse) (Mozilla). Browser compatibility has not been independently verified.
 
 ## Fork of avif-serialize
 
@@ -215,7 +215,7 @@ This is a fork of [kornelski/avif-serialize](https://github.com/kornelski/avif-s
 | | |
 |:--|:--|
 | **Codecs** ¹ | [zenjpeg] · [zenpng] · [zenwebp] · [zengif] · [zenavif] · [zenjxl] · [zenbitmaps] · [heic] · [zentiff] · [zenpdf] · [zensvg] · [zenjp2] · [zenraw] · [ultrahdr] |
-| Codec internals | [zenjxl-decoder] · [jxl-encoder] · [zenrav1e] · [rav1d-safe] · [zenavif-parse] · **zenavif-serialize** |
+| Codec internals | [zenjxl-decoder] · [jxl-encoder] · [zenrav1e] · [rav1d-safe] · [heif-parse] · **heif-serialize** |
 | Compression | [zenflate] · [zenzop] · [zenzstd] |
 | Processing | [zenresize] · [zenquant] · [zenblend] · [zenfilters] · [zensally] · [zentone] |
 | Pixels & color | [zenpixels] · [zenpixels-convert] · [linear-srgb] · [garb] |
@@ -250,7 +250,7 @@ This is a fork of [kornelski/avif-serialize](https://github.com/kornelski/avif-s
 [jxl-encoder]: https://github.com/imazen/jxl-encoder
 [zenrav1e]: https://github.com/imazen/zenrav1e
 [rav1d-safe]: https://github.com/imazen/rav1d-safe
-[zenavif-parse]: https://github.com/imazen/zenavif-parse
+[heif-parse]: https://github.com/felixbuenemann/heif-parse
 [zenflate]: https://github.com/imazen/zenflate
 [zenzop]: https://github.com/imazen/zenzop
 [zenzstd]: https://github.com/imazen/zenzstd

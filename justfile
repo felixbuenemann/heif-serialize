@@ -1,4 +1,4 @@
-# zenavif-serialize dev commands
+# heif-serialize dev commands
 
 # Format + regenerate the public-API surface snapshot (docs/public-api/).
 # The snapshot runner lives in the standalone apidoc/ package, so it is

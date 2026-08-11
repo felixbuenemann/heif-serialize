@@ -4,7 +4,7 @@
 //!
 //! 1. Compress pixels using an AV1 encoder, such as [rav1e](https://lib.rs/rav1e). [libaom](https://lib.rs/libaom-sys) works too.
 //!
-//! 2. Call `zenavif_serialize::serialize_to_vec(av1_data, None, width, height, 8)`
+//! 2. Call `heif_serialize::serialize_to_vec(av1_data, None, width, height, 8)`
 //!
 //! See [cavif](https://github.com/kornelski/cavif-rs) for a complete implementation.
 
@@ -281,7 +281,7 @@ struct GainMapConfig {
 /// Makes an AVIF file given encoded AV1 data (create the data with [`rav1e`](https://lib.rs/rav1e))
 ///
 /// `color_av1_data` is already-encoded AV1 image data for the color channels (YUV, RGB, etc.).
-/// [You can parse this information out of AV1 payload with `avif-parse`](https://docs.rs/zenavif-parse/latest/zenavif_parse/struct.AV1Metadata.html).
+/// [You can parse this information out of AV1 payload with `avif-parse`](https://docs.rs/heif-parse/latest/heif_parse/struct.AV1Metadata.html).
 ///
 /// The color image should have been encoded without chroma subsampling AKA YUV444 (`Cs444` in `rav1e`)
 /// AV1 handles full-res color so effortlessly, you should never need chroma subsampling ever again.
@@ -312,7 +312,7 @@ impl Default for Aviffy {
 impl Aviffy {
     /// You will have to set image properties to match the AV1 bitstream.
     ///
-    /// [You can get this information out of the AV1 payload with `avif-parse`](https://docs.rs/zenavif-parse/latest/zenavif_parse/struct.AV1Metadata.html).
+    /// [You can get this information out of the AV1 payload with `avif-parse`](https://docs.rs/heif-parse/latest/heif_parse/struct.AV1Metadata.html).
     #[inline]
     #[must_use]
     pub fn new() -> Self {
@@ -342,7 +342,7 @@ impl Aviffy {
     }
 
     /// Set an upper bound on the serialized file size in bytes (opt-in
-    /// resource limit; zenavif-serialize#3).
+    /// resource limit; heif-serialize#3).
     ///
     /// The muxer's output size is essentially the sum of the caller-supplied
     /// payloads plus fixed headers, so this is a guard for callers passing
@@ -1019,7 +1019,7 @@ impl Aviffy {
     /// bytes, or a located [`SerializeError`] on invalid input (e.g.
     /// `depth_bits` not 8/10/12), an exceeded
     /// [`Self::set_max_output_bytes`] cap, or allocation failure — instead
-    /// of panicking (zenavif-serialize#6).
+    /// of panicking (heif-serialize#6).
     ///
     /// Prefer this on request paths that cannot afford a panic; `to_vec`
     /// remains the panic-on-misuse convenience wrapper.
@@ -1182,7 +1182,7 @@ pub fn serialize_to_vec(color_av1_data: &[u8], alpha_av1_data: Option<&[u8]>, wi
 
 /// Fallible variant of [`serialize_to_vec`]: returns a located
 /// [`SerializeError`] on invalid input instead of panicking
-/// (zenavif-serialize#6).
+/// (heif-serialize#6).
 pub fn try_serialize_to_vec(color_av1_data: &[u8], alpha_av1_data: Option<&[u8]>, width: u32, height: u32, depth_bits: u8) -> Result<Vec<u8>> {
     Aviffy::new().try_to_vec(color_av1_data, alpha_av1_data, width, height, depth_bits)
 }
@@ -1209,7 +1209,7 @@ fn test_roundtrip_parse_mp4_alpha() {
     assert_eq!(&test_a[..], ctx.alpha_item_coded_data().unwrap());
 }
 
-/// zenavif-serialize#6: the fallible Vec APIs must return `Err` (not panic)
+/// heif-serialize#6: the fallible Vec APIs must return `Err` (not panic)
 /// on invalid input, and produce byte-identical output on valid input.
 #[test]
 fn try_to_vec_errors_instead_of_panicking() {
@@ -1234,7 +1234,7 @@ fn try_to_vec_errors_instead_of_panicking() {
     );
 }
 
-/// The panic-on-misuse contract of `to_vec` is unchanged (zenavif-serialize#6
+/// The panic-on-misuse contract of `to_vec` is unchanged (heif-serialize#6
 /// is additive).
 #[test]
 #[should_panic]
@@ -1242,7 +1242,7 @@ fn to_vec_still_panics_on_bad_depth() {
     let _ = Aviffy::new().to_vec(b"av1", None, 10, 20, 9);
 }
 
-/// zenavif-serialize#3: opt-in output-size cap fires before any output.
+/// heif-serialize#3: opt-in output-size cap fires before any output.
 #[test]
 fn max_output_bytes_cap_is_enforced() {
     let test_img = b"av12356abc";
@@ -1343,7 +1343,7 @@ fn test_heif_exif(tiff_exif: &[u8]) -> Vec<u8> {
 /// A minimal but structurally valid little-endian TIFF Exif block (`II*\0` …).
 #[cfg(test)]
 fn test_tiff_exif() -> Vec<u8> {
-    let make = b"zenavif-serialize\0";
+    let make = b"heif-serialize\0";
     let ifd0_offset = 8_u32;
     let ifd0_entry_count = 1_u16;
     let make_value_offset = 8 + 2 + 12 + 4;
@@ -1370,7 +1370,7 @@ fn test_roundtrip_parse_avif() {
     let test_alpha = [77, 88, 99];
     let avif = serialize_to_vec(&test_img, Some(&test_alpha), 10, 20, 8);
 
-    let parser = zenavif_parse::AvifParser::from_bytes(&avif).unwrap();
+    let parser = heif_parse::AvifParser::from_bytes(&avif).unwrap();
 
     assert_eq!(&test_img[..], parser.primary_data().unwrap().as_ref());
     assert_eq!(&test_alpha[..], parser.alpha_data().unwrap().unwrap().as_ref());
@@ -1384,7 +1384,7 @@ fn test_roundtrip_parse_avif_colr() {
         .matrix_coefficients(constants::MatrixCoefficients::Bt709)
         .to_vec(&test_img, Some(&test_alpha), 10, 20, 8);
 
-    let parser = zenavif_parse::AvifParser::from_bytes(&avif).unwrap();
+    let parser = heif_parse::AvifParser::from_bytes(&avif).unwrap();
 
     assert_eq!(&test_img[..], parser.primary_data().unwrap().as_ref());
     assert_eq!(&test_alpha[..], parser.alpha_data().unwrap().unwrap().as_ref());
@@ -1396,7 +1396,7 @@ fn premultiplied_flag() {
     let test_alpha = [55,66,77,88,99];
     let avif = Aviffy::new().premultiplied_alpha(true).to_vec(&test_img, Some(&test_alpha), 5, 5, 8);
 
-    let parser = zenavif_parse::AvifParser::from_bytes(&avif).unwrap();
+    let parser = heif_parse::AvifParser::from_bytes(&avif).unwrap();
 
     assert!(parser.premultiplied_alpha());
     assert_eq!(&test_img[..], parser.primary_data().unwrap().as_ref());
@@ -1436,7 +1436,7 @@ fn monochrome_primary_av1c_and_pixi() {
     );
 
     // Still parses as a normal AVIF with the payload intact.
-    let parser = zenavif_parse::AvifParser::from_bytes(&avif).unwrap();
+    let parser = heif_parse::AvifParser::from_bytes(&avif).unwrap();
     assert_eq!(&test_img[..], parser.primary_data().unwrap().as_ref());
 }
 
@@ -1468,7 +1468,7 @@ fn clli_roundtrip() {
         .set_content_light_level(1000, 400)
         .to_vec(&test_img, None, 10, 20, 8);
 
-    let parser = zenavif_parse::AvifParser::from_bytes(&avif).unwrap();
+    let parser = heif_parse::AvifParser::from_bytes(&avif).unwrap();
     let cll = parser.content_light_level().expect("clli box should be present");
     assert_eq!(cll.max_content_light_level, 1000);
     assert_eq!(cll.max_pic_average_light_level, 400);
@@ -1491,7 +1491,7 @@ fn mdcv_roundtrip() {
         .set_mastering_display(primaries, white_point, max_luminance, min_luminance)
         .to_vec(&test_img, None, 10, 20, 8);
 
-    let parser = zenavif_parse::AvifParser::from_bytes(&avif).unwrap();
+    let parser = heif_parse::AvifParser::from_bytes(&avif).unwrap();
     let mdcv = parser.mastering_display().expect("mdcv box should be present");
     assert_eq!(mdcv.primaries, primaries);
     assert_eq!(mdcv.white_point, white_point);
@@ -1518,7 +1518,7 @@ fn hdr10_full_metadata() {
         .set_mastering_display(primaries, white_point, 40_000_000, 50)
         .to_vec(&test_img, Some(&test_alpha), 10, 20, 10);
 
-    let parser = zenavif_parse::AvifParser::from_bytes(&avif).unwrap();
+    let parser = heif_parse::AvifParser::from_bytes(&avif).unwrap();
 
     // Verify CLLI
     let cll = parser.content_light_level().expect("clli box should be present");
@@ -1542,7 +1542,7 @@ fn no_hdr_metadata_by_default() {
     let test_img = [1, 2, 3, 4, 5, 6];
     let avif = serialize_to_vec(&test_img, None, 10, 20, 8);
 
-    let parser = zenavif_parse::AvifParser::from_bytes(&avif).unwrap();
+    let parser = heif_parse::AvifParser::from_bytes(&avif).unwrap();
     assert!(parser.content_light_level().is_none());
     assert!(parser.mastering_display().is_none());
 }
@@ -1555,7 +1555,7 @@ fn rotation_roundtrip() {
             .set_rotation(angle)
             .to_vec(&test_img, None, 10, 20, 8);
 
-        let parser = zenavif_parse::AvifParser::from_bytes(&avif).unwrap();
+        let parser = heif_parse::AvifParser::from_bytes(&avif).unwrap();
         let rot = parser.rotation().expect("irot box should be present");
         let expected_angle = match angle {
             0 => 0,
@@ -1579,7 +1579,7 @@ fn mirror_roundtrip() {
             .set_mirror(axis)
             .to_vec(&test_img, None, 10, 20, 8);
 
-        let parser = zenavif_parse::AvifParser::from_bytes(&avif).unwrap();
+        let parser = heif_parse::AvifParser::from_bytes(&avif).unwrap();
         let mir = parser.mirror().expect("imir box should be present");
         assert_eq!(mir.axis, axis);
     }
@@ -1597,7 +1597,7 @@ fn clap_roundtrip() {
         })
         .to_vec(&test_img, None, 10, 20, 8);
 
-    let parser = zenavif_parse::AvifParser::from_bytes(&avif).unwrap();
+    let parser = heif_parse::AvifParser::from_bytes(&avif).unwrap();
     let clap = parser.clean_aperture().expect("clap box should be present");
     assert_eq!(clap.width_n, 800);
     assert_eq!(clap.width_d, 1);
@@ -1621,7 +1621,7 @@ fn clap_with_negative_offset() {
         })
         .to_vec(&test_img, None, 10, 20, 8);
 
-    let parser = zenavif_parse::AvifParser::from_bytes(&avif).unwrap();
+    let parser = heif_parse::AvifParser::from_bytes(&avif).unwrap();
     let clap = parser.clean_aperture().expect("clap box should be present");
     assert_eq!(clap.horiz_off_n, -10);
     assert_eq!(clap.vert_off_n, -20);
@@ -1634,7 +1634,7 @@ fn pasp_roundtrip() {
         .set_pixel_aspect_ratio(2, 1)
         .to_vec(&test_img, None, 10, 20, 8);
 
-    let parser = zenavif_parse::AvifParser::from_bytes(&avif).unwrap();
+    let parser = heif_parse::AvifParser::from_bytes(&avif).unwrap();
     let pasp = parser.pixel_aspect_ratio().expect("pasp box should be present");
     assert_eq!(pasp.h_spacing, 2);
     assert_eq!(pasp.v_spacing, 1);
@@ -1650,14 +1650,14 @@ fn icc_profile_roundtrip() {
         .set_icc_profile(fake_icc.clone())
         .to_vec(&test_img, None, 10, 20, 8);
 
-    let parser = zenavif_parse::AvifParser::from_bytes(&avif).unwrap();
+    let parser = heif_parse::AvifParser::from_bytes(&avif).unwrap();
     // Two colr boxes are written -- the profile and the code points -- so the
     // profile is the one reached through icc_color_info.
     let color_info = parser
         .icc_color_info()
         .expect("an ICC colr box should be present");
     match color_info {
-        zenavif_parse::ColorInformation::IccProfile(data) => {
+        heif_parse::ColorInformation::IccProfile(data) => {
             assert_eq!(data.as_slice(), &fake_icc[..]);
         }
         _ => panic!("expected ICC profile color info, got {:?}", color_info),
@@ -1676,15 +1676,15 @@ fn icc_and_nclx_are_both_kept() {
         .set_icc_profile(fake_icc.clone())
         .to_vec(&test_img, None, 10, 20, 8);
 
-    let parser = zenavif_parse::AvifParser::from_bytes(&avif).unwrap();
+    let parser = heif_parse::AvifParser::from_bytes(&avif).unwrap();
     match parser.icc_color_info() {
-        Some(zenavif_parse::ColorInformation::IccProfile(data)) => {
+        Some(heif_parse::ColorInformation::IccProfile(data)) => {
             assert_eq!(data.as_slice(), &fake_icc[..]);
         }
         other => panic!("expected ICC profile, got {:?}", other),
     }
     match parser.color_info() {
-        Some(zenavif_parse::ColorInformation::Nclx {
+        Some(heif_parse::ColorInformation::Nclx {
             color_primaries, ..
         }) => {
             assert_eq!(*color_primaries, constants::ColorPrimaries::Bt2020 as u16);
@@ -1703,7 +1703,7 @@ fn xmp_roundtrip() {
         .to_vec(&test_img, None, 10, 20, 8);
 
     // Verify the primary data is intact
-    let parser = zenavif_parse::AvifParser::from_bytes(&avif).unwrap();
+    let parser = heif_parse::AvifParser::from_bytes(&avif).unwrap();
     assert_eq!(parser.primary_data().unwrap().as_ref(), &test_img[..]);
 
     // Verify XMP data is somewhere in the file
@@ -1720,7 +1720,7 @@ fn rotation_and_mirror_combined() {
         .set_mirror(0)    // vertical axis
         .to_vec(&test_img, None, 10, 20, 8);
 
-    let parser = zenavif_parse::AvifParser::from_bytes(&avif).unwrap();
+    let parser = heif_parse::AvifParser::from_bytes(&avif).unwrap();
     let rot = parser.rotation().expect("irot should be present");
     let mir = parser.mirror().expect("imir should be present");
     assert_eq!(rot.angle, 90);
@@ -1748,7 +1748,7 @@ fn all_properties_combined() {
         )
         .to_vec(&test_img, Some(&test_alpha), 10, 20, 8);
 
-    let parser = zenavif_parse::AvifParser::from_bytes(&avif).unwrap();
+    let parser = heif_parse::AvifParser::from_bytes(&avif).unwrap();
     assert_eq!(parser.rotation().unwrap().angle, 180);
     assert_eq!(parser.mirror().unwrap().axis, 1);
     assert!(parser.clean_aperture().is_some());
@@ -2052,7 +2052,7 @@ fn gain_map_roundtrip() {
         .set_gain_map(gain_map_data.to_vec(), 4, 4, 8, metadata.clone())
         .to_vec(primary_data, None, 10, 20, 8);
 
-    let parser = zenavif_parse::AvifParser::from_bytes(&avif).unwrap();
+    let parser = heif_parse::AvifParser::from_bytes(&avif).unwrap();
 
     // Primary data intact
     assert_eq!(parser.primary_data().unwrap().as_ref(), &primary_data[..]);
@@ -2082,7 +2082,7 @@ fn gain_map_with_alpha() {
         .set_gain_map(gain_map_data.to_vec(), 4, 4, 8, metadata)
         .to_vec(primary_data, Some(alpha_data), 10, 20, 8);
 
-    let parser = zenavif_parse::AvifParser::from_bytes(&avif).unwrap();
+    let parser = heif_parse::AvifParser::from_bytes(&avif).unwrap();
 
     // Primary + alpha data intact
     assert_eq!(parser.primary_data().unwrap().as_ref(), &primary_data[..]);
@@ -2104,7 +2104,7 @@ fn gain_map_multichannel_metadata() {
         .set_gain_map(gain_map_data.to_vec(), 2, 2, 8, metadata.clone())
         .to_vec(&primary_data, None, 10, 20, 8);
 
-    let parser = zenavif_parse::AvifParser::from_bytes(&avif).unwrap();
+    let parser = heif_parse::AvifParser::from_bytes(&avif).unwrap();
     let gm_meta = parser.gain_map_metadata().expect("gain map metadata present");
     assert!(gm_meta.is_multichannel);
     assert!(!gm_meta.use_base_colour_space);
@@ -2122,7 +2122,7 @@ fn gain_map_metadata_field_exact() {
         .set_gain_map(gain_map_data.to_vec(), 1, 1, 8, metadata.clone())
         .to_vec(&primary_data, None, 10, 20, 8);
 
-    let parser = zenavif_parse::AvifParser::from_bytes(&avif).unwrap();
+    let parser = heif_parse::AvifParser::from_bytes(&avif).unwrap();
     let gm_meta = parser.gain_map_metadata().expect("gain map metadata present");
 
     assert_eq!(gm_meta.alternate_hdr_headroom_n, 6);
@@ -2157,7 +2157,7 @@ fn gain_map_alt_colr_roundtrip() {
         .set_gain_map_alt_colr(alt_colr)
         .to_vec(&primary_data, None, 10, 20, 8);
 
-    let parser = zenavif_parse::AvifParser::from_bytes(&avif).unwrap();
+    let parser = heif_parse::AvifParser::from_bytes(&avif).unwrap();
 
     // Gain map data intact
     let gm_data = parser.gain_map_data().expect("gain map data present").unwrap();
@@ -2166,7 +2166,7 @@ fn gain_map_alt_colr_roundtrip() {
     // Verify alternate color info
     let alt = parser.gain_map_color_info().expect("alt color info should be present");
     match alt {
-        zenavif_parse::ColorInformation::Nclx {
+        heif_parse::ColorInformation::Nclx {
             color_primaries,
             transfer_characteristics,
             matrix_coefficients,
@@ -2194,13 +2194,13 @@ fn gain_map_alt_icc_roundtrip() {
         .set_gain_map_alt_icc(alt_icc.clone())
         .to_vec(&primary_data, None, 10, 20, 8);
 
-    let parser = zenavif_parse::AvifParser::from_bytes(&avif).unwrap();
+    let parser = heif_parse::AvifParser::from_bytes(&avif).unwrap();
     let gm_data = parser.gain_map_data().expect("gain map data present").unwrap();
     assert_eq!(gm_data.as_ref(), &gain_map_data[..]);
 
     let alt = parser.gain_map_color_info().expect("alt color info should be present");
     match alt {
-        zenavif_parse::ColorInformation::IccProfile(data) => {
+        heif_parse::ColorInformation::IccProfile(data) => {
             assert_eq!(data.as_slice(), &alt_icc[..], "tmap ICC payload verbatim");
         }
         other => panic!("expected ICC color info, got: {:?}", other),
@@ -2274,7 +2274,7 @@ fn gain_map_writes_tmap_brand_and_altr_group() {
 fn no_gain_map_by_default() {
     let test_img = [1, 2, 3, 4, 5, 6];
     let avif = serialize_to_vec(&test_img, None, 10, 20, 8);
-    let parser = zenavif_parse::AvifParser::from_bytes(&avif).unwrap();
+    let parser = heif_parse::AvifParser::from_bytes(&avif).unwrap();
     assert!(parser.gain_map_metadata().is_none(), "no gain map metadata by default");
     assert!(parser.gain_map_data().is_none(), "no gain map data by default");
 }
@@ -2305,7 +2305,7 @@ fn gain_map_metadata_bytes_exact_roundtrip() {
         .set_gain_map(gain_map_data.to_vec(), 1, 1, 8, original_meta.clone())
         .to_vec(&primary_data, None, 10, 20, 8);
 
-    let parser = zenavif_parse::AvifParser::from_bytes(&avif).unwrap();
+    let parser = heif_parse::AvifParser::from_bytes(&avif).unwrap();
     let parsed = parser.gain_map_metadata().expect("gain map metadata present");
     let roundtripped = parsed.to_bytes();
 
@@ -2328,7 +2328,7 @@ fn gain_map_backward_direction_flag_roundtrip() {
         .set_gain_map(gain_map_data.to_vec(), 1, 1, 8, meta_bytes.clone())
         .to_vec(&primary_data, None, 10, 20, 8);
 
-    let parser = zenavif_parse::AvifParser::from_bytes(&avif).unwrap();
+    let parser = heif_parse::AvifParser::from_bytes(&avif).unwrap();
     let parsed = parser.gain_map_metadata().expect("gain map metadata");
 
     assert!(parsed.backward_direction, "backward_direction must be parsed as true");
@@ -2350,7 +2350,7 @@ fn gain_map_multichannel_metadata_bytes_roundtrip() {
         .set_gain_map(gain_map_data.to_vec(), 2, 2, 8, original_meta.clone())
         .to_vec(&primary_data, None, 10, 20, 8);
 
-    let parser = zenavif_parse::AvifParser::from_bytes(&avif).unwrap();
+    let parser = heif_parse::AvifParser::from_bytes(&avif).unwrap();
     let parsed = parser.gain_map_metadata().expect("gain map metadata");
     assert!(parsed.is_multichannel);
 

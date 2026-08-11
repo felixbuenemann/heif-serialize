@@ -30,17 +30,17 @@ version is pre-bumped to prevent an accidental semver-violating 0.1.5.
   item (may be combined with the nclx `set_gain_map_alt_colr`; ISOBMFF allows
   one `colr` of each type). Matches libavif interop vectors whose tmap colr
   is an ICC profile (`seine_sdr_gainmap_srgb_icc.avif`).
-- **Fallible `Vec` serialization** (zenavif-serialize#6): `Aviffy::try_to_vec`
+- **Fallible `Vec` serialization** (heif-serialize#6): `Aviffy::try_to_vec`
   and free `try_serialize_to_vec` return `Result<Vec<u8>>` (located
   `SerializeError`) instead of panicking on invalid input — for request paths
   that cannot afford a panic. `to_vec` / `serialize_to_vec` keep their
   documented panic-on-misuse contract and now route through the same checked
   path.
-- **Opt-in output-size cap** (zenavif-serialize#3):
+- **Opt-in output-size cap** (heif-serialize#3):
   `Aviffy::set_max_output_bytes` / `with_max_output_bytes` rejects a
   projected file size above the cap before any output is produced
   (`SerializeError::InvalidInput`).
-- Versioned public-API surface snapshot at `docs/public-api/zenavif-serialize.txt`,
+- Versioned public-API surface snapshot at `docs/public-api/heif-serialize.txt`,
   regenerated on every `cargo test` via `tests/public_api_doc.rs`
   (`ZEN_API_DOC=check` verifies in CI's clippy job, `=off` skips elsewhere).
   Justfile recipes `api-doc` / `api-doc-check`.
@@ -56,14 +56,14 @@ version is pre-bumped to prevent an accidental semver-violating 0.1.5.
 
 ### Fixed
 - **Outputs over `u32::MAX` bytes are rejected instead of silently corrupted**
-  (zenavif-serialize#3): iloc extent offsets/lengths are serialized as `u32`
+  (heif-serialize#3): iloc extent offsets/lengths are serialized as `u32`
   (no largesize), so a >4 GiB file truncated `data.len() as u32` and wrapped
   `next_start` — a structurally corrupt file with no error. `write_header` now
   guards the projected file size up front (every entry point funnels through
   it), and the iloc arithmetic is checked as a backstop. `write_to_vec` also
   no longer swallows mdat write errors (OOM previously returned `Ok` with a
   truncated buffer).
-- **README `no_std` claim removed** (zenavif-serialize#3): the crate uses
+- **README `no_std` claim removed** (heif-serialize#3): the crate uses
   `std::io` throughout; README.md and README.crates.md said `no_std`-compatible
   in three places. Replaced with the accurate `#![forbid(unsafe_code)]` + `std::io`
   statement.
@@ -103,7 +103,7 @@ version is pre-bumped to prevent an accidental semver-violating 0.1.5.
 
 ### Changed
 - Bumped dependency versions (archmage, magetypes, enough, whereat, linear-srgb)
-- Removed local patch override for zenavif-parse
+- Removed local patch override for heif-parse
 
 ## 0.1.2
 
@@ -118,7 +118,7 @@ version is pre-bumped to prevent an accidental semver-violating 0.1.5.
 
 ### Changed
 - Comprehensive CI: 7-platform matrix, i686, WASM, Codecov
-- zenavif-parse dependency bumped to 0.4
+- heif-parse dependency bumped to 0.4
 
 ## 0.1.0
 
@@ -132,4 +132,4 @@ expanded format support.
 - Grid image (multiple tiles) support
 - ICC color profile embedding
 - EXIF/XMP metadata embedding
-- Tested against zenavif-parse, libavif, and gpac parsers
+- Tested against heif-parse, libavif, and gpac parsers

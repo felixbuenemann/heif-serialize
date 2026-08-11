@@ -91,7 +91,7 @@ fn encode_mono<P: Pixel + Default>(
 }
 
 fn write_fixture(dir: &str, name: &str, w: u32, h: u32, depth: u8, av1: &[u8]) {
-    let avif = zenavif_serialize::Aviffy::new()
+    let avif = heif_serialize::Aviffy::new()
         .set_monochrome(true)
         .to_vec(av1, None, w, h, depth);
     let path = format!("{dir}/{name}");
@@ -212,7 +212,7 @@ fn main() {
         icc[0..4].copy_from_slice(&144u32.to_be_bytes());
         icc[16..20].copy_from_slice(&class);
         icc[36..40].copy_from_slice(b"acsp");
-        let avif = zenavif_serialize::Aviffy::new()
+        let avif = heif_serialize::Aviffy::new()
             .set_monochrome(true)
             .set_icc_profile(icc)
             .to_vec(&av1, None, 96, 64, 8);
@@ -226,7 +226,7 @@ fn main() {
     // profile's CICP is derivable (normalized-hash identification), so
     // decoders can emit native gray with an accurate CICP-only context
     // instead of expanding to RGB just to honor the profile.
-    let avif = zenavif_serialize::Aviffy::new()
+    let avif = heif_serialize::Aviffy::new()
         .set_monochrome(true)
         .set_icc_profile(zenpixels_convert::icc_profiles::DISPLAY_P3_V4.to_vec())
         .to_vec(&av1, None, 96, 64, 8);

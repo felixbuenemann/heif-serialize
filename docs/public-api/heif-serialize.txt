@@ -1,4 +1,4 @@
-# zenavif-serialize public API — supported surface (default features)
+# heif-serialize public API — supported surface (default features)
 # (regenerated on every `cargo test` by zenutils-apidoc; ZEN_API_DOC=check verifies, =off skips).
 # Encodings: crate-name prefix stripped; auto traits collapse to a
 # count + exceptions; trait impls collapse to one roster line per
@@ -6,7 +6,7 @@
 # impls omitted; re-export duplicates annotated `[also: path]`.
 # DO NOT EDIT BY HAND — commit regenerated changes with the code.
 #
-# files: zenavif-serialize.txt 176 lines (supported surface) | zenavif-serialize.features.txt 0 added (features: none) | zenavif-serialize.internal.txt 24 lines (24 hidden + 0 excluded-feature)
+# files: heif-serialize.txt 176 lines (supported surface) | heif-serialize.features.txt 0 added (features: none) | heif-serialize.internal.txt 24 lines (24 hidden + 0 excluded-feature)
 
 ## summary
 #
@@ -29,7 +29,7 @@
 
 ## items (155 lines)
 
-pub mod zenavif_serialize
+pub mod heif_serialize
 pub mod animated
 #[non_exhaustive] pub struct animated::AnimFrame<'a>
 pub animated::AnimFrame::alpha: core::option::Option<&'a [u8]>

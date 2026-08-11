@@ -1,4 +1,4 @@
-use zenavif_serialize::Aviffy;
+use heif_serialize::Aviffy;
 use std::fs;
 use std::path::Path;
 
@@ -7,7 +7,7 @@ fn main() {
 
     let avif_file = fs::read(&path).expect("Can't load input image");
 
-    let parser = zenavif_parse::AvifParser::from_owned(avif_file).unwrap();
+    let parser = heif_parse::AvifParser::from_owned(avif_file).unwrap();
     let meta = parser.primary_metadata().expect("Can't read AV1 metadata");
 
     let primary = parser.primary_data().expect("Can't read primary data");

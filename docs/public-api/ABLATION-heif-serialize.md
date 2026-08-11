@@ -1,9 +1,9 @@
-# ABLATION-zenavif-serialize — Conservative Public-API Review
+# ABLATION-heif-serialize — Conservative Public-API Review
 
 **Date:** 2026-06-10
 **Snapshot commit:** d628b108335b (main@origin)
-**Snapshot file:** docs/public-api/zenavif-serialize.txt (393 items, no features)
-**Grep template:** `grep -rn "<SYMBOL>" /home/lilith/work/ --include="*.rs" 2>/dev/null | grep -v "/zen/zenavif-serialize/" | grep -v "target/" | grep -v ".jj/"`
+**Snapshot file:** docs/public-api/heif-serialize.txt (393 items, no features)
+**Grep template:** `grep -rn "<SYMBOL>" /home/lilith/work/ --include="*.rs" 2>/dev/null | grep -v "/zen/heif-serialize/" | grep -v "target/" | grep -v ".jj/"`
 
 ## Summary
 
@@ -15,7 +15,7 @@ Known consumers as of this scan: ravif/zenrav1e (primary consumer of `Aviffy`, `
 
 ### Box types with zero direct consumer hits (KEEP)
 
-The following `#[non_exhaustive]` box types appear in the API as parameters to `AnimatedImage` / `GridImage` setters but have no direct `zenavif_serialize::XxxBox` references in consumer code:
+The following `#[non_exhaustive]` box types appear in the API as parameters to `AnimatedImage` / `GridImage` setters but have no direct `heif_serialize::XxxBox` references in consumer code:
 
 `ClliBox`, `MdcvBox`, `ColrIccBox`, `ImirBox`, `IrotBox`, `ClapBox`, `ColrBox`, `PaspBox`, `ChromaSubsampling`
 

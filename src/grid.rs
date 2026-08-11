@@ -733,8 +733,8 @@ mod tests {
                 "tile data should be in output");
         }
 
-        // Parse with zenavif-parse
-        let parser = zenavif_parse::AvifParser::from_bytes(&avif).unwrap();
+        // Parse with heif-parse
+        let parser = heif_parse::AvifParser::from_bytes(&avif).unwrap();
         let grid = parser.grid_config().expect("should have grid config");
         assert_eq!(grid.rows, 2);
         assert_eq!(grid.columns, 2);
@@ -752,7 +752,7 @@ mod tests {
         image.set_color_config(basic_av1c());
 
         let avif = image.serialize(1, 3, 300, 100, 100, 100, &tile_refs, None).unwrap();
-        let parser = zenavif_parse::AvifParser::from_bytes(&avif).unwrap();
+        let parser = heif_parse::AvifParser::from_bytes(&avif).unwrap();
         let grid = parser.grid_config().expect("grid config");
         assert_eq!(grid.rows, 1);
         assert_eq!(grid.columns, 3);
@@ -780,7 +780,7 @@ mod tests {
             assert!(avif.windows(tile.len()).any(|w| w == tile.as_slice()));
         }
 
-        let parser = zenavif_parse::AvifParser::from_bytes(&avif).unwrap();
+        let parser = heif_parse::AvifParser::from_bytes(&avif).unwrap();
         let grid = parser.grid_config().expect("grid config");
         assert_eq!(grid.rows, 2);
         assert_eq!(grid.columns, 2);
@@ -817,7 +817,7 @@ mod tests {
         let avif = image.serialize(2, 2, 200, 200, 100, 100, &tile_refs, None).unwrap();
 
         // Resolve each tile via the iloc table and confirm its bytes match exactly.
-        let parser = zenavif_parse::AvifParser::from_bytes(&avif).unwrap();
+        let parser = heif_parse::AvifParser::from_bytes(&avif).unwrap();
         assert_eq!(parser.grid_tile_count(), 4);
         let originals = [tile0.as_slice(), tile1.as_slice(), tile2.as_slice(), tile3.as_slice()];
         for (i, original) in originals.iter().enumerate() {
