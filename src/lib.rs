@@ -1651,7 +1651,11 @@ fn icc_profile_roundtrip() {
         .to_vec(&test_img, None, 10, 20, 8);
 
     let parser = zenavif_parse::AvifParser::from_bytes(&avif).unwrap();
-    let color_info = parser.color_info().expect("colr box should be present");
+    // Two colr boxes are written -- the profile and the code points -- so the
+    // profile is the one reached through icc_color_info.
+    let color_info = parser
+        .icc_color_info()
+        .expect("an ICC colr box should be present");
     match color_info {
         zenavif_parse::ColorInformation::IccProfile(data) => {
             assert_eq!(data.as_slice(), &fake_icc[..]);
@@ -1661,21 +1665,31 @@ fn icc_profile_roundtrip() {
 }
 
 #[test]
-fn icc_overrides_nclx() {
+fn icc_and_nclx_are_both_kept() {
     let test_img = [1, 2, 3, 4, 5, 6];
     let fake_icc = vec![1, 2, 3, 4];
-    // Setting both ICC and nclx: ICC should win
+    // Setting both: neither displaces the other. They describe the same image
+    // to two kinds of reader -- one that applies a profile and one that reads
+    // code points -- so a file that states both must hand back both.
     let avif = Aviffy::new()
         .set_color_primaries(constants::ColorPrimaries::Bt2020)
         .set_icc_profile(fake_icc.clone())
         .to_vec(&test_img, None, 10, 20, 8);
 
     let parser = zenavif_parse::AvifParser::from_bytes(&avif).unwrap();
-    match parser.color_info() {
+    match parser.icc_color_info() {
         Some(zenavif_parse::ColorInformation::IccProfile(data)) => {
             assert_eq!(data.as_slice(), &fake_icc[..]);
         }
         other => panic!("expected ICC profile, got {:?}", other),
+    }
+    match parser.color_info() {
+        Some(zenavif_parse::ColorInformation::Nclx {
+            color_primaries, ..
+        }) => {
+            assert_eq!(*color_primaries, constants::ColorPrimaries::Bt2020 as u16);
+        }
+        other => panic!("expected the code points too, got {:?}", other),
     }
 }
 
