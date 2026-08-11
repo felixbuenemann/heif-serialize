@@ -616,14 +616,37 @@ fn write_meta_grid(
     }
 
     // iref
+    //
+    // ONE box per (from, type), listing every reference, rather than one box
+    // per reference. A grid names one `dimg` per tile, and writing them as
+    // separate single-reference boxes is read by libheif as a grid with ONE
+    // tile — which it then refuses, for having fewer tiles than its own grid
+    // descriptor promises. A 2x2 grid written the old way came back as
+    // "Tiled image with 2x2=4 tiles, but only 1 tile images in file".
+    //
+    // Order is preserved within a group because the reference INDEX is
+    // meaningful: it is what places each tile in the grid.
     if !irefs.is_empty() {
         let iref_pos = begin_box(out, b"iref");
         write_fullbox(out, 0, 0);
+        let mut written: Vec<(u16, [u8; 4])> = Vec::new();
         for entry in irefs {
+            let group = (entry.from_id, entry.typ.0);
+            if written.contains(&group) {
+                continue;
+            }
+            written.push(group);
+            let members: Vec<u16> = irefs
+                .iter()
+                .filter(|other| (other.from_id, other.typ.0) == group)
+                .map(|other| other.to_id)
+                .collect();
             let entry_pos = begin_box(out, &entry.typ.0);
             write_u16(out, entry.from_id);
-            write_u16(out, 1); // reference_count
-            write_u16(out, entry.to_id);
+            write_u16(out, members.len() as u16);
+            for to_id in members {
+                write_u16(out, to_id);
+            }
             end_box(out, entry_pos);
         }
         end_box(out, iref_pos);
