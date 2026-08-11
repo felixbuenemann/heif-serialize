@@ -262,7 +262,7 @@ impl AnimatedImage {
         &mut out, 1, width, height,
         self.timescale, total_duration,
         &color_frames, &durations, &sync_indices,
-        color_codec, self.clap.as_ref(),
+        color_codec, self.colr.as_ref(), self.clap.as_ref(),
         false, presented,
     );
     let alpha_stco_pos = if has_alpha {
@@ -271,6 +271,7 @@ impl AnimatedImage {
             self.timescale, total_duration,
             &alpha_frames, &durations, &sync_indices,
             alpha_codec.expect("has_alpha implies an alpha configuration"),
+            None,
             self.clap.as_ref(),
             true, presented,
         ))
@@ -631,6 +632,7 @@ fn write_track(
     durations: &[u32],
     sync_indices: &[u32],
     codec: CodecConfig<'_>,
+    colr: Option<&ColrBox>,
     clap: Option<&ClapBox>,
     is_alpha: bool,
     presented: Presentation,
@@ -794,6 +796,22 @@ fn write_track(
                         out.extend_from_slice(codec.alpha_aux_urn().as_bytes());
                         out.push(0);
                         end_box(out, pos);
+                    }
+
+                    // colr, so the track states its own colour.
+                    //
+                    // The still item carries one already, but a track is a
+                    // separate declaration and a file need not have an item at
+                    // all: a player reading only the track -- which is what a
+                    // sequence-only file leaves it -- otherwise has nothing to
+                    // go on and falls back to a guess. Written for the colour
+                    // track only; an auxiliary one carries alpha, which is not
+                    // a colour and has no primaries to name.
+                    if !is_alpha
+                        && let Some(colr) = colr
+                        && *colr != ColrBox::default()
+                    {
+                        write_colr_nclx(out, colr);
                     }
 
                     // clap, when the coded frame is larger than the picture.
@@ -1027,6 +1045,7 @@ fn fixed_16_16_saturating(value: u32) -> u32 {
 mod tests {
     use super::*;
     use crate::boxes::HvcCParameterSet;
+    use crate::constants::{ColorPrimaries, MatrixCoefficients, TransferCharacteristics};
 
     fn basic_av1c() -> Av1CBox {
         Av1CBox {
@@ -1409,6 +1428,77 @@ mod tests {
             .expect("an edit list");
         let segment = u32::from_be_bytes(thrice[elst + 12..elst + 16].try_into().unwrap());
         assert_eq!(segment, 80, "the segment is one pass over the media");
+    }
+
+    #[test]
+    fn the_track_states_its_own_colour() {
+        // A file need not have a still item at all, and a player reading only
+        // the track then has nothing to go on. The item's colr does not serve
+        // it: that is a separate declaration on a separate structure.
+        let mut image = AnimatedImage::new();
+        image.set_hevc_config(basic_hvcc());
+        image.set_colr(ColrBox {
+            color_primaries: ColorPrimaries::Bt2020,
+            transfer_characteristics: TransferCharacteristics::Smpte2084,
+            matrix_coefficients: MatrixCoefficients::Bt2020Ncl,
+            full_range_flag: true,
+        });
+        let frames = [
+            AnimFrame::new(b"k1", 10).with_sync(true),
+            AnimFrame::new(b"k2", 10).with_sync(true),
+        ];
+        let file = image.serialize(16, 16, &frames, b"", None);
+
+        // Two now: the item's and the track's.
+        let colrs: Vec<usize> = file
+            .windows(4)
+            .enumerate()
+            .filter(|(_, w)| *w == b"colr")
+            .map(|(at, _)| at)
+            .collect();
+        assert_eq!(colrs.len(), 2, "the item states one and the track the other");
+
+        // The second is the track's: it falls inside the moov, which the meta
+        // precedes. Read its code points rather than trusting the position.
+        let at = colrs[1];
+        assert_eq!(&file[at + 4..at + 8], b"nclx");
+        let code = |offset: usize| u16::from_be_bytes(file[at + offset..at + offset + 2].try_into().unwrap());
+        assert_eq!(code(8), 9, "primaries");
+        assert_eq!(code(10), 16, "transfer");
+        assert_eq!(code(12), 9, "matrix");
+        assert_eq!(code(14) >> 15, 1, "full range");
+
+        let moov = file
+            .windows(4)
+            .position(|w| w == b"moov")
+            .expect("a moov");
+        assert!(at > moov, "the second colr is the track's");
+    }
+
+    #[test]
+    fn an_alpha_track_states_no_colour() {
+        // Alpha is not a colour: it has no primaries to name, and a colr on
+        // an auxiliary track would have a reader treat coverage as light.
+        let mut image = AnimatedImage::new();
+        image.set_hevc_config(basic_hvcc());
+        image.set_alpha_hevc_config(basic_hvcc());
+        // Not the default triple, which both writers skip as "says nothing".
+        image.set_colr(ColrBox {
+            color_primaries: ColorPrimaries::Bt2020,
+            transfer_characteristics: TransferCharacteristics::Smpte2084,
+            matrix_coefficients: MatrixCoefficients::Bt2020Ncl,
+            full_range_flag: true,
+        });
+        let frames = [AnimFrame::new(b"k1", 10)
+            .with_sync(true)
+            .with_alpha(b"a1")];
+        let file = image.serialize(16, 16, &frames, b"", None);
+
+        let colrs = file.windows(4).filter(|w| *w == b"colr").count();
+        assert_eq!(
+            colrs, 2,
+            "the item and the colour track, and not the alpha track"
+        );
     }
 
     #[test]
