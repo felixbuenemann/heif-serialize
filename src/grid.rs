@@ -250,6 +250,7 @@ impl GridImage {
             id: ids.color_grid_id,
             typ: FourCC(*b"grid"),
             name: "",
+            hidden: false,
             content_type: "",
         });
         ipma_entries.push(IpmaEntry {
@@ -270,6 +271,7 @@ impl GridImage {
             id: ids.alpha_grid_id,
             typ: FourCC(*b"grid"),
             name: "",
+            hidden: true,
             content_type: "",
         });
         irefs.push(IrefEntryBox {
@@ -417,6 +419,7 @@ fn add_one_tile_group(
             typ: if g.hevc { FourCC(*b"hvc1") } else { FourCC(*b"av01") },
             name: "",
             content_type: "",
+            hidden: true,
         });
         irefs.push(IrefEntryBox {
             from_id: g.parent_grid_id,
@@ -642,7 +645,11 @@ fn write_meta_grid(
 
         for item in image_items {
             let infe_pos = begin_box(out, b"infe");
-            write_fullbox(out, 2, 0);
+            // (flags & 1) is the hidden bit. The tiles of a grid set it: they
+            // are inputs to a derived image, not pictures in their own right,
+            // and a reader enumerating images should find one image here, not
+            // one plus every tile.
+            write_fullbox(out, 2, u32::from(item.hidden));
             write_u16(out, item.id);
             write_u16(out, 0); // protection_index
             out.extend_from_slice(&item.typ.0);
@@ -975,6 +982,44 @@ mod tests {
             1,
             "sRGB was set and must be written, default or not"
         );
+    }
+
+    /// A grid's tiles are inputs to a derived image, not pictures in their own
+    /// right. Left visible, a reader enumerating the file finds one image per
+    /// tile plus the grid -- nineteen images where there is one -- and MIAF
+    /// 7.3.6.6 then demands a 'pixi' on every one of them.
+    #[test]
+    fn a_grids_tiles_are_hidden_and_the_grid_itself_is_not() {
+        let tiles: Vec<Vec<u8>> = (0..4).map(|i| vec![i as u8; 100]).collect();
+        let tile_refs: Vec<&[u8]> = tiles.iter().map(|t| t.as_slice()).collect();
+
+        let mut image = GridImage::new();
+        image.set_color_config(basic_av1c());
+        let file = image
+            .serialize(2, 2, 200, 200, 100, 100, &tile_refs, None)
+            .unwrap();
+
+        // Walk the infe boxes: version 2, then 3 flag bytes, then item_ID.
+        let mut at = 0;
+        let mut seen = Vec::new();
+        while let Some(found) = file[at..]
+            .windows(4)
+            .position(|w| w == b"infe")
+            .map(|p| at + p)
+        {
+            let flags = u32::from_be_bytes([0, file[found + 5], file[found + 6], file[found + 7]]);
+            let typ = &file[found + 12..found + 16];
+            seen.push((typ.to_vec(), flags & 1 == 1));
+            at = found + 4;
+        }
+
+        assert_eq!(seen.len(), 5, "one grid and four tiles");
+        assert_eq!(seen[0].0, b"grid", "the grid item comes first");
+        assert!(!seen[0].1, "the primary item must not be hidden");
+        for (typ, hidden) in &seen[1..] {
+            assert_eq!(typ, b"av01");
+            assert!(hidden, "every tile is hidden");
+        }
     }
 
     #[test]

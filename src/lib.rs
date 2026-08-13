@@ -52,7 +52,7 @@ fn add_cdsc_sidecar<'data>(
 ) {
     let id = *next_item_id;
     *next_item_id += 1;
-    image_items.push(InfeBox { id, typ, name: "", content_type });
+    image_items.push(InfeBox { id, typ, name: "", content_type, hidden: false });
     iloc_items.push(IlocItem { id, extents });
     irefs.push(IrefEntryBox {
         from_id: id,
@@ -85,6 +85,7 @@ fn add_gain_map<'data>(
         id: gain_map_id,
         typ: if gm.hevc_config.is_some() { FourCC(*b"hvc1") } else { FourCC(*b"av01") },
         name: "",
+        hidden: false,
         content_type: "",
     });
     let gm_ispe = push_prop(ipco, IpcoProp::Ispe(IspeBox { width: gm.width, height: gm.height }))?;
@@ -135,6 +136,7 @@ fn add_gain_map<'data>(
         id: tmap_id,
         typ: FourCC(*b"tmap"),
         name: "",
+        hidden: false,
         content_type: "",
     });
     let mut tmap_props: ArrayVec<u8, 12> = ArrayVec::new();
@@ -700,6 +702,7 @@ impl Aviffy {
             id: color_image_id,
             typ: if self.hevc_config.is_some() { FourCC(*b"hvc1") } else { FourCC(*b"av01") },
             name: "",
+            hidden: false,
             content_type: "",
         });
         let ispe_prop = push_prop(&mut ipco, IpcoProp::Ispe(IspeBox { width, height }))
@@ -942,6 +945,7 @@ impl Aviffy {
     ) -> io::Result<()> {
         image_items.push(InfeBox {
             id: alpha_image_id,
+            hidden: false,
             typ: if self.alpha_hevc_config.is_some() {
                 FourCC(*b"hvc1")
             } else {

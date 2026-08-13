@@ -73,8 +73,21 @@ impl<'w, B> Writer<'static, 'w, B> {
 impl<B: WriterBackend> Writer<'_, '_, B> {
     #[inline(always)]
     pub fn full_box(&mut self, len: usize, typ: [u8; 4], version: u8) -> Result<Writer<'_, '_, B>, B::Error> {
+        self.full_box_with_flags(len, typ, version, 0)
+    }
+
+    /// A full box whose 24 flag bits carry something.
+    #[inline]
+    pub fn full_box_with_flags(
+        &mut self,
+        len: usize,
+        typ: [u8; 4],
+        version: u8,
+        flags: u32,
+    ) -> Result<Writer<'_, '_, B>, B::Error> {
         let mut b = self.basic_box(len, typ)?;
-        b.push(&[version, 0, 0, 0])?;
+        let [_, f1, f2, f3] = flags.to_be_bytes();
+        b.push(&[version, f1, f2, f3])?;
         Ok(b)
     }
 

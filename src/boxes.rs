@@ -244,6 +244,9 @@ pub struct InfeBox {
     pub name: &'static str,
     /// Content type (only for `mime` items, e.g. "application/rdf+xml" for XMP)
     pub content_type: &'static str,
+    /// Not an image in its own right: an input to a derived image rather than
+    /// something to show or count. Written as `(flags & 1)` on the `infe`.
+    pub hidden: bool,
 }
 
 impl MpegBox for InfeBox {
@@ -258,7 +261,7 @@ impl MpegBox for InfeBox {
     }
 
     fn write<B: WriterBackend>(&self, w: &mut Writer<B>) -> Result<(), B::Error> {
-        let mut b = w.full_box(self.len(), *b"infe", 2)?;
+        let mut b = w.full_box_with_flags(self.len(), *b"infe", 2, u32::from(self.hidden))?;
         b.u16(self.id)?;
         b.u16(0)?;
         b.push(&self.typ.0)?;
