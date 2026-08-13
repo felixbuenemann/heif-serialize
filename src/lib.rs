@@ -232,6 +232,11 @@ pub struct Aviffy {
     pasp: Option<PaspBox>,
     icc_profile: Option<Vec<u8>>,
     min_seq_profile: u8,
+    /// What the AV1 sequence header declares, when the caller read it there.
+    /// The ISOBMFF binding requires `av1C` to repeat these exactly; 31 is
+    /// "no level constraints", which is what gets written when nobody says.
+    seq_level_idx_0: u8,
+    seq_tier_0: bool,
     /// When set, the primary item is HEVC-coded rather than AV1: written as
     /// an `hvc1` item carrying this `hvcC`, under HEIC brands. Alpha and gain
     /// maps stay AV1-only for now — they have their own item types and
@@ -321,6 +326,8 @@ impl Aviffy {
         Self {
             premultiplied_alpha: false,
             min_seq_profile: 1,
+            seq_level_idx_0: 31,
+            seq_tier_0: false,
             hevc_config: None,
             alpha_hevc_config: None,
             chroma_subsampling: ChromaSubsampling::NONE,
@@ -868,8 +875,8 @@ impl Aviffy {
 
         let av1c_color_prop = push_prop(ipco, IpcoProp::Av1C(Av1CBox {
             seq_profile,
-            seq_level_idx_0: 31,
-            seq_tier_0: false,
+            seq_level_idx_0: self.seq_level_idx_0,
+            seq_tier_0: self.seq_tier_0,
             high_bitdepth: color_depth_bits >= 10,
             twelve_bit: color_depth_bits >= 12,
             monochrome: self.monochrome,
@@ -1078,6 +1085,25 @@ impl Aviffy {
     #[inline]
     pub fn set_seq_profile(&mut self, seq_profile: u8) -> &mut Self {
         self.min_seq_profile = seq_profile;
+        self
+    }
+
+    /// The level the sequence header declares.
+    ///
+    /// "The seq_level_idx_0 field SHALL be equal to the value of
+    /// seq_level_idx[0] from the Sequence Header OBU". Unset, this stays 31 --
+    /// "no level constraints" -- which is legal but says nothing, and readers
+    /// that validate the record against the stream will disagree with it.
+    #[inline]
+    pub fn set_seq_level_idx(&mut self, seq_level_idx_0: u8) -> &mut Self {
+        self.seq_level_idx_0 = seq_level_idx_0;
+        self
+    }
+
+    /// The tier the sequence header declares.
+    #[inline]
+    pub fn set_seq_tier(&mut self, seq_tier_0: bool) -> &mut Self {
+        self.seq_tier_0 = seq_tier_0;
         self
     }
 
