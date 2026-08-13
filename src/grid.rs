@@ -178,10 +178,18 @@ impl GridImage {
         } else {
             push_prop(ipco, IpcoProp::Av1C(self.color_config))?
         };
+        // Whichever config describes the tiles is the one that knows how many
+        // channels they carry. Reading the AV1 record here counted three for a
+        // monochrome HEVC grid, because an HEVC grid never sets that record and
+        // its default is not monochrome.
+        let monochrome = match self.hevc_config {
+            Some(ref hevc) => hevc.chroma_format_idc == 0,
+            None => self.color_config.monochrome,
+        };
         let pixi_color = push_prop(
             ipco,
             IpcoProp::Pixi(PixiBox {
-                channels: if self.color_config.monochrome { 1 } else { 3 },
+                channels: if monochrome { 1 } else { 3 },
                 depth: self.depth_bits,
             }),
         )?;
