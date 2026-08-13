@@ -21,6 +21,10 @@ pub struct GridImage {
     alpha_config: Option<Av1CBox>,
     depth_bits: u8,
     colr: Option<ColrBox>,
+    /// An ICC profile describing the colour, carried beside the `colr` rather
+    /// than instead of it: readers that understand only one of the two are
+    /// common in both directions.
+    icc_profile: Option<Vec<u8>>,
     premultiplied_alpha: bool,
 }
 
@@ -37,6 +41,7 @@ impl GridImage {
             alpha_config: None,
             depth_bits: 8,
             colr: None,
+            icc_profile: None,
             premultiplied_alpha: false,
         }
     }
@@ -59,6 +64,12 @@ impl GridImage {
     pub fn set_depth_bits(&mut self, depth: u8) -> &mut Self { self.depth_bits = depth; self }
     /// CICP color info (nclx).
     pub fn set_colr(&mut self, colr: ColrBox) -> &mut Self { self.colr = Some(colr); self }
+    /// An ICC profile for the reconstructed image.
+    ///
+    /// Written alongside the `colr` rather than in place of it, matching the
+    /// single-item writer: a reader that understands only one of the two is
+    /// common in both directions.
+    pub fn set_icc_profile(&mut self, icc: Vec<u8>) -> &mut Self { self.icc_profile = Some(icc); self }
     /// Whether alpha is premultiplied. Default: false.
     pub fn set_premultiplied_alpha(&mut self, premultiplied: bool) -> &mut Self { self.premultiplied_alpha = premultiplied; self }
 
@@ -175,6 +186,14 @@ impl GridImage {
             }),
         )?;
 
+        // ICC before nclx, the order the single-item writer uses.
+        let icc = match self.icc_profile {
+            Some(ref data) => Some(push_prop(
+                ipco,
+                IpcoProp::ColrIcc(ColrIccBox { icc_data: data.clone() }),
+            )?),
+            None => None,
+        };
         let colr = match self.colr {
             Some(c) if c != ColrBox::default() => Some(push_prop(ipco, IpcoProp::Colr(c))?),
             _ => None,
@@ -197,6 +216,7 @@ impl GridImage {
             ispe_tile,
             av1c_color,
             pixi_color,
+            icc,
             colr,
             av1c_alpha,
             pixi_alpha,
@@ -224,6 +244,7 @@ impl GridImage {
             prop_ids: prop_ids_from(
                 [ipco_ids.ispe_output, ipco_ids.pixi_color]
                     .into_iter()
+                    .chain(ipco_ids.icc)
                     .chain(ipco_ids.colr),
             ),
         });
@@ -292,6 +313,7 @@ struct IpcoIds {
     ispe_tile: u8,
     av1c_color: u8,
     pixi_color: u8,
+    icc: Option<u8>,
     colr: Option<u8>,
     av1c_alpha: Option<u8>,
     pixi_alpha: Option<u8>,
@@ -882,6 +904,34 @@ mod tests {
             .unwrap();
         assert_eq!(&avif[8..12], b"avif", "major brand");
         assert_eq!(&avif[16..20], b"avif", "first compatible brand");
+    }
+
+    /// A grid could state nclx colour but had no way to carry an ICC profile,
+    /// so any input with one lost it on the way through.
+    #[test]
+    fn a_grid_carries_an_icc_profile() {
+        let tiles: Vec<Vec<u8>> = (0..4).map(|i| vec![i as u8; 100]).collect();
+        let tile_refs: Vec<&[u8]> = tiles.iter().map(|t| t.as_slice()).collect();
+        let profile: Vec<u8> = (0..128u8).collect();
+
+        let mut image = GridImage::new();
+        image.set_color_config(basic_av1c());
+        let without = image
+            .serialize(2, 2, 200, 200, 100, 100, &tile_refs, None)
+            .unwrap();
+        image.set_icc_profile(profile.clone());
+        let with = image
+            .serialize(2, 2, 200, 200, 100, 100, &tile_refs, None)
+            .unwrap();
+
+        assert!(
+            with.windows(profile.len()).any(|w| w == profile),
+            "the profile bytes are not in the file"
+        );
+        assert!(!without.windows(profile.len()).any(|w| w == profile));
+        // A `colr` box of type `prof` is what carries it.
+        assert!(with.windows(4).any(|w| w == b"prof"));
+        assert!(with.len() > without.len() + profile.len() - 8);
     }
 
     #[test]
