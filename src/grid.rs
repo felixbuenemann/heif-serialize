@@ -19,6 +19,10 @@ pub struct GridImage {
     /// configuration, which is what makes a single record enough.
     hevc_config: Option<HvcCBox>,
     alpha_config: Option<Av1CBox>,
+    /// When set, the alpha tiles are HEVC-coded, the same way `hevc_config`
+    /// decides that for the colour tiles. Kept separate rather than reusing
+    /// the colour record: alpha is monochrome and carries its own.
+    alpha_hevc_config: Option<HvcCBox>,
     depth_bits: u8,
     colr: Option<ColrBox>,
     /// An ICC profile describing the colour, carried beside the `colr` rather
@@ -39,6 +43,7 @@ impl GridImage {
             color_config: Av1CBox::default(),
             hevc_config: None,
             alpha_config: None,
+            alpha_hevc_config: None,
             depth_bits: 8,
             colr: None,
             icc_profile: None,
@@ -60,6 +65,14 @@ impl GridImage {
     }
     /// AV1 codec configuration for alpha tiles.
     pub fn set_alpha_config(&mut self, config: Av1CBox) -> &mut Self { self.alpha_config = Some(config); self }
+    /// Code the alpha tiles with HEVC instead of AV1.
+    ///
+    /// Alpha tile payloads must then be HEVC item payloads, as
+    /// [`set_hevc_config`](Self::set_hevc_config) requires of the colour ones.
+    pub fn set_alpha_hevc_config(&mut self, config: HvcCBox) -> &mut Self {
+        self.alpha_hevc_config = Some(config);
+        self
+    }
     /// Bit depth (8, 10, or 12). Default: 8.
     pub fn set_depth_bits(&mut self, depth: u8) -> &mut Self { self.depth_bits = depth; self }
     /// CICP color info (nclx).
@@ -95,7 +108,8 @@ impl GridImage {
         let tile_count = rows as usize * columns as usize;
         validate_tile_counts(tile_count, tile_data, alpha_data)?;
 
-        let has_alpha = alpha_data.is_some() && self.alpha_config.is_some();
+        let has_alpha = alpha_data.is_some()
+            && (self.alpha_config.is_some() || self.alpha_hevc_config.is_some());
         let ids = ItemIds::assign(tile_count, has_alpha);
 
         let grid_descriptor = make_grid_descriptor(rows, columns, output_width, output_height);
@@ -133,6 +147,7 @@ impl GridImage {
             tile_count,
             has_alpha,
             self.hevc_config.is_some(),
+            self.alpha_hevc_config.is_some(),
         );
 
         let mut out = Vec::new();
@@ -213,7 +228,13 @@ impl GridImage {
         };
 
         let (av1c_alpha, pixi_alpha, auxc_alpha) = if has_alpha {
-            let ac = push_prop(ipco, IpcoProp::Av1C(*self.alpha_config.as_ref().unwrap()))?;
+            let ac = match self.alpha_hevc_config {
+                Some(ref hevc) => push_prop(ipco, IpcoProp::HvcC(hevc.clone()))?,
+                None => push_prop(
+                    ipco,
+                    IpcoProp::Av1C(*self.alpha_config.as_ref().expect("alpha config when has_alpha")),
+                )?,
+            };
             let pa = push_prop(ipco, IpcoProp::Pixi(PixiBox { channels: 1, depth: self.depth_bits }))?;
             let aux = push_prop(
                 ipco,
@@ -385,6 +406,10 @@ fn add_tile_items(
     tile_count: usize,
     has_alpha: bool,
     hevc: bool,
+    // Alpha carries its own configuration, so it can in principle be coded
+    // with the other codec. Passing the colour flag for both would give the
+    // alpha tiles an item type their payloads are not.
+    alpha_hevc: bool,
 ) {
     add_one_tile_group(image_items, ipma_entries, irefs, TileGroup {
         parent_grid_id: ids.color_grid_id,
@@ -401,7 +426,7 @@ fn add_tile_items(
             ispe_tile: ipco_ids.ispe_tile,
             av1c_essential: ipco_ids.av1c_alpha.expect("alpha av1c when has_alpha") | ESSENTIAL_BIT,
             tile_count,
-            hevc,
+            hevc: alpha_hevc,
         });
     }
 }
@@ -1020,6 +1045,46 @@ mod tests {
             assert_eq!(typ, b"av01");
             assert!(hidden, "every tile is hidden");
         }
+    }
+
+    /// An HEVC grid with alpha: the alpha tiles are hvc1 carrying their own
+    /// monochrome hvcC, not av01, and the alpha grid is hidden.
+    #[test]
+    fn an_hevc_grid_can_carry_hevc_alpha() {
+        let tiles: Vec<Vec<u8>> = (0..4).map(|i| vec![i as u8; 100]).collect();
+        let refs: Vec<&[u8]> = tiles.iter().map(|t| t.as_slice()).collect();
+        let alpha: Vec<Vec<u8>> = (0..4).map(|i| vec![0x40 + i as u8; 60]).collect();
+        let alpha_refs: Vec<&[u8]> = alpha.iter().map(|t| t.as_slice()).collect();
+
+        let mut image = GridImage::new();
+        image
+            .set_hevc_config(HvcCBox::default())
+            .set_alpha_hevc_config(HvcCBox {
+                chroma_format_idc: 0,
+                ..HvcCBox::default()
+            });
+        let file = image
+            .serialize(2, 2, 200, 200, 100, 100, &refs, Some(&alpha_refs))
+            .unwrap();
+
+        // Two grids and eight tiles, and every tile is hvc1 -- an alpha tile
+        // typed av01 would be the colour codec leaking across.
+        let mut at = 0;
+        let mut items = Vec::new();
+        while let Some(found) = file[at..].windows(4).position(|w| w == b"infe").map(|p| at + p) {
+            items.push((
+                file[found + 12..found + 16].to_vec(),
+                u32::from_be_bytes([0, file[found + 5], file[found + 6], file[found + 7]]) & 1 == 1,
+            ));
+            at = found + 4;
+        }
+        assert_eq!(items.len(), 10, "two grids and eight tiles");
+        assert_eq!(items.iter().filter(|(t, _)| t == b"grid").count(), 2);
+        assert_eq!(items.iter().filter(|(t, _)| t == b"hvc1").count(), 8);
+        assert_eq!(items.iter().filter(|(t, _)| t == b"av01").count(), 0);
+        // Only the colour grid is visible.
+        assert_eq!(items.iter().filter(|(_, hidden)| !hidden).count(), 1);
+        assert_eq!(&file[8..12], b"heic");
     }
 
     #[test]
