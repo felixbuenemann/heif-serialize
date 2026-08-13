@@ -194,9 +194,14 @@ impl GridImage {
             )?),
             None => None,
         };
+        // Written whenever it was set, even if it happens to equal the default.
+        // The default is not "nothing to say" -- it is sRGB, the commonest
+        // colour there is -- and a missing colr box does not state it, it
+        // leaves the colour unspecified. The single-item writer has always
+        // written this box unconditionally.
         let colr = match self.colr {
-            Some(c) if c != ColrBox::default() => Some(push_prop(ipco, IpcoProp::Colr(c))?),
-            _ => None,
+            Some(c) => Some(push_prop(ipco, IpcoProp::Colr(c))?),
+            None => None,
         };
 
         let (av1c_alpha, pixi_alpha, auxc_alpha) = if has_alpha {
@@ -932,6 +937,36 @@ mod tests {
         // A `colr` box of type `prof` is what carries it.
         assert!(with.windows(4).any(|w| w == b"prof"));
         assert!(with.len() > without.len() + profile.len() - 8);
+    }
+
+    /// sRGB is `ColrBox`'s default, and a grid used to skip writing the box
+    /// whenever the colour matched it -- so the commonest colour of all came
+    /// out as "unspecified" while every other colour was stated.
+    #[test]
+    fn a_grid_states_srgb_rather_than_leaving_it_unspecified() {
+        let tiles: Vec<Vec<u8>> = (0..4).map(|i| vec![i as u8; 100]).collect();
+        let tile_refs: Vec<&[u8]> = tiles.iter().map(|t| t.as_slice()).collect();
+
+        let mut image = GridImage::new();
+        image.set_color_config(basic_av1c());
+        let without = image
+            .serialize(2, 2, 200, 200, 100, 100, &tile_refs, None)
+            .unwrap();
+        assert_eq!(
+            without.windows(4).filter(|w| *w == b"colr").count(),
+            0,
+            "no colour was set, so none is stated"
+        );
+
+        image.set_colr(ColrBox::default());
+        let with = image
+            .serialize(2, 2, 200, 200, 100, 100, &tile_refs, None)
+            .unwrap();
+        assert_eq!(
+            with.windows(4).filter(|w| *w == b"colr").count(),
+            1,
+            "sRGB was set and must be written, default or not"
+        );
     }
 
     #[test]
