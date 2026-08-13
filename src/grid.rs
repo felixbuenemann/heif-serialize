@@ -125,7 +125,7 @@ impl GridImage {
         );
 
         let mut out = Vec::new();
-        write_ftyp(&mut out);
+        write_ftyp(&mut out, self.hevc_config.is_some());
         let iloc_offset_positions = write_meta_grid(
             &mut out,
             &image_items,
@@ -481,11 +481,18 @@ fn write_fullbox(out: &mut Vec<u8>, version: u8, flags: u32) {
     out.push(flags as u8);
 }
 
-fn write_ftyp(out: &mut Vec<u8>) {
+/// A HEVC-coded grid is a HEIC and must say so.
+///
+/// Readers pick their decoder from the brand before they look at any item, so
+/// a grid of `hvc1` tiles announced as `avif` sends them to an AV1 decoder for
+/// HEVC data. The single-item writer has always branched here; the grid writer
+/// gained `hvcC` support without it.
+fn write_ftyp(out: &mut Vec<u8>, hevc: bool) {
+    let brand: &[u8; 4] = if hevc { b"heic" } else { b"avif" };
     let pos = begin_box(out, b"ftyp");
-    out.extend_from_slice(b"avif");
+    out.extend_from_slice(brand);
     write_u32(out, 0);
-    out.extend_from_slice(b"avif");
+    out.extend_from_slice(brand);
     out.extend_from_slice(b"mif1");
     out.extend_from_slice(b"miaf");
     end_box(out, pos);
@@ -848,6 +855,33 @@ mod tests {
             assert_eq!(got.as_ref(), *original,
                 "tile {i} corrupted by placeholder scan or iloc misaligned");
         }
+    }
+
+    /// A grid of HEVC tiles has to announce itself as HEIC. Readers choose a
+    /// decoder from the brand before reading any item, so an `avif` brand over
+    /// `hvc1` tiles hands HEVC data to an AV1 decoder.
+    #[test]
+    fn a_grid_of_hevc_tiles_is_branded_heic() {
+        let tiles: Vec<Vec<u8>> = (0..4).map(|i| vec![i as u8; 100]).collect();
+        let tile_refs: Vec<&[u8]> = tiles.iter().map(|t| t.as_slice()).collect();
+
+        let mut image = GridImage::new();
+        image.set_hevc_config(HvcCBox::default());
+        let heic = image
+            .serialize(2, 2, 200, 200, 100, 100, &tile_refs, None)
+            .unwrap();
+        assert_eq!(&heic[4..8], b"ftyp");
+        assert_eq!(&heic[8..12], b"heic", "major brand");
+        assert_eq!(&heic[16..20], b"heic", "first compatible brand");
+
+        // The AV1 path keeps saying avif, unchanged.
+        let mut image = GridImage::new();
+        image.set_color_config(basic_av1c());
+        let avif = image
+            .serialize(2, 2, 200, 200, 100, 100, &tile_refs, None)
+            .unwrap();
+        assert_eq!(&avif[8..12], b"avif", "major brand");
+        assert_eq!(&avif[16..20], b"avif", "first compatible brand");
     }
 
     #[test]
