@@ -232,6 +232,10 @@ pub struct Aviffy {
     pasp: Option<PaspBox>,
     icc_profile: Option<Vec<u8>>,
     min_seq_profile: u8,
+    /// Where the chroma samples sit, as the sequence header declares it. The
+    /// binding requires av1C to repeat that value, so a caller that sets one
+    /// must set the other.
+    chroma_sample_position: u8,
     /// What the AV1 sequence header declares, when the caller read it there.
     /// The ISOBMFF binding requires `av1C` to repeat these exactly; 31 is
     /// "no level constraints", which is what gets written when nobody says.
@@ -326,6 +330,7 @@ impl Aviffy {
         Self {
             premultiplied_alpha: false,
             min_seq_profile: 1,
+            chroma_sample_position: 0,
             seq_level_idx_0: 31,
             seq_tier_0: false,
             hevc_config: None,
@@ -882,7 +887,7 @@ impl Aviffy {
             monochrome: self.monochrome,
             chroma_subsampling_x: sub_x,
             chroma_subsampling_y: sub_y,
-            chroma_sample_position: 0,
+            chroma_sample_position: self.chroma_sample_position,
         }))?;
         // MIAF: pixi channel count reflects the coded image — 1 for
         // monochrome, 3 for color.
@@ -1104,6 +1109,17 @@ impl Aviffy {
     #[inline]
     pub fn set_seq_tier(&mut self, seq_tier_0: bool) -> &mut Self {
         self.seq_tier_0 = seq_tier_0;
+        self
+    }
+
+    /// Where the chroma samples sit, as the sequence header declares it.
+    ///
+    /// "The chroma_sample_position parameter value SHALL equal the value of
+    /// chroma_sample_position in the Sequence Header OBU", so this must be the
+    /// value the encoder was actually given, not a guess.
+    #[inline]
+    pub fn set_chroma_sample_position(&mut self, position: u8) -> &mut Self {
+        self.chroma_sample_position = position;
         self
     }
 
