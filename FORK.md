@@ -32,8 +32,8 @@ that emits `hvcC` and `hvc1` and HEVC-coded tracks is probably not what it
 wants, and the crate rename makes the divergence explicit rather than
 pretending otherwise.
 
-Individual fixes might still be worth offering — `98016aa` in particular; see
-the notes.
+Individual fixes might still be worth offering — the indefinite-duration fix for
+repeating sequences in particular.
 
 ## The commit rule
 
@@ -63,12 +63,12 @@ seams in it is one nobody else can use.
 
 ## Divergence from upstream
 
-**The crate is renamed.** Upstream it is `zenavif-serialize`; `af7b473` is the
-rename. Read it as this crate's identity rather than as damage: `heif-serialize`
+**The crate is renamed.** Upstream it is `zenavif-serialize`; the rename is its
+own commit. Read it as this crate's identity rather than as damage: `heif-serialize`
 is what it would publish as, and the name says what it does. It is also the one
-commit that could never be upstreamed, so it is kept last and isolated — which
-happens to be exactly what makes it cheap to lift off if anyone ever does
-rebase onto upstream instead.
+commit that could never be upstreamed, so it is kept isolated — which happens
+to be exactly what makes it cheap to lift off if anyone ever does rebase onto
+upstream instead.
 
 Nothing else diverges. If something SIS-specific ever has to live here, record
 it in this section with the reason, so it is visible later — and treat its
