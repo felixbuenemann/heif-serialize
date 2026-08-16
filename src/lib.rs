@@ -695,8 +695,8 @@ impl Aviffy {
         height: u32,
         depth_bits: u8,
     ) -> Result<AvifFile<'data>> {
-        if ![8, 10, 12].contains(&depth_bits) {
-            return Err(at!(SerializeError::InvalidInput("depth must be 8/10/12")));
+        if ![8, 10, 12, 14, 16].contains(&depth_bits) {
+            return Err(at!(SerializeError::InvalidInput("depth must be 8, 10, 12, 14, or 16")));
         }
 
         let mut image_items = ArrayVec::new();
